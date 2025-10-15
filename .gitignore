@@ -36,3 +36,12 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Outputs and logs (Hydra + Lightning)
+outputs/
+multirun/
+wandb/
+logs/
+results/
+checkpoints/
+*.log
+

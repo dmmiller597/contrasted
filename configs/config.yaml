@@ -1,0 +1,109 @@
+defaults:
+  - _self_
+  - experiment: supcon
+
+seed: 42
+
+paths:
+  train_fasta: data/clustered_datasets/train.fasta
+  val_fasta: data/clustered_datasets/val.fasta
+  test_fasta: data/clustered_datasets/s30/test.fasta
+  embedding_file: data/cath-domain-seqs-S100.h5
+  label_file: data/cath-domain-sf-list.txt
+
+datamodule:
+  _target_: contrasted.data.CathDataModule
+  train_fasta: ${paths.train_fasta}
+  val_fasta: ${paths.val_fasta}
+  test_fasta: ${paths.test_fasta}
+  label_file: ${paths.label_file}
+  embedding_file: ${paths.embedding_file}
+  batch_size: ${data.batch_size}
+  num_workers: ${data.num_workers}
+  pin_memory: ${data.pin_memory}
+
+data:
+  batch_size: 1024
+  num_workers: 4
+  pin_memory: true
+
+model:
+  _target_: contrasted.model.CathSupConModel
+  _recursive_: false
+  num_classes: null
+  input_dim: 1024
+  proj_hidden_dims: [512, 256]
+  proj_output_dim: 128
+  dropout: 0.1
+  loss_type: supcon
+  loss_weight: 1.0
+  loss_params:
+    temperature: 0.07
+    normalize: true
+  learning_rate: ${optimizer.learning_rate}
+  weight_decay: ${optimizer.weight_decay}
+  scheduler_type: ${scheduler.type}
+  scheduler_params: ${scheduler.params}
+
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+
+scheduler:
+  type: cosine
+  params:
+    T_max: ${trainer.max_epochs}
+    eta_min: 0.0
+
+trainer:
+  max_epochs: 100
+  accelerator: auto
+  devices: auto
+  precision: 32
+  gradient_clip_val: 1.0
+  deterministic: true
+  log_every_n_steps: 10
+  accumulate_grad_batches: 1
+  val_check_interval: 1.0
+  enable_progress_bar: true
+  enable_model_summary: true
+  default_root_dir: ${hydra:run.dir}
+
+logging:
+  logger:
+    _target_: lightning.pytorch.loggers.WandbLogger
+    project: contrasted
+    entity: dmmiller597
+    name: null
+    offline: false
+    save_dir: ${hydra:run.dir}/wandb
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      monitor: val/knn_macro_f1
+      mode: max
+      save_top_k: 1
+      save_last: true
+      filename: "epoch={epoch:02d}-knn_f1={val/knn_macro_f1:.4f}"
+      dirpath: ${hydra:run.dir}/checkpoints
+    - _target_: lightning.pytorch.callbacks.EarlyStopping
+      monitor: val/knn_macro_f1
+      mode: max
+      patience: 10
+      min_delta: 0.0001
+    - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+      logging_interval: step
+    - _target_: contrasted.callbacks.KNNEvaluationCallback
+      eval_every_n_epochs: 10
+      chunk_size: 2048
+
+# Execution controls
+run:
+  do_test_after_fit: true
+  test_ckpt_path: best  # one of: 'best', 'last', null
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    name: ${hydra:runtime.choices.experiment}
+    chdir: false

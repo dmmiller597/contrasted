@@ -1,0 +1,7 @@
+# @package _global_
+
+model:
+  loss_type: proxy_anchor
+  loss_params:
+    margin: 0.1
+    alpha: 32.0
