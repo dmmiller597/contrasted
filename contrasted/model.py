@@ -45,7 +45,6 @@ class CathSupConModel(L.LightningModule):
         proj_output_dim: int = 128,
         dropout: float = 0.1,
         loss_type: str = "supcon",
-        loss_weight: float = 1.0,
         loss_params: Optional[Dict[str, Any]] = None,
         learning_rate: float = 0.001,
         weight_decay: float = 0.0001,
@@ -74,7 +73,6 @@ class CathSupConModel(L.LightningModule):
             self.main_loss = SupConLoss(
                 temperature=loss_params.get("temperature", 0.07)
             )
-            self.loss_name = "supcon"
         elif loss_type == "proxy_anchor":
             # Proxy anchor requires num_classes; will be initialized in setup()
             self._proxy_anchor_params = {
@@ -83,11 +81,8 @@ class CathSupConModel(L.LightningModule):
                 "alpha": loss_params.get("alpha", 32.0),
             }
             self.main_loss = None
-            self.loss_name = "proxy_anchor"
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
-        
-        self.loss_weight = loss_weight
     
     def forward(self, embeddings: torch.Tensor) -> Dict[str, torch.Tensor]:
         return {'projection': self.projection_head(embeddings)}
@@ -98,7 +93,7 @@ class CathSupConModel(L.LightningModule):
             self._num_classes = self.trainer.datamodule.num_classes
         
         # Initialize proxy anchor loss if needed
-        if self.loss_name == "proxy_anchor" and self.main_loss is None:
+        if self.main_loss is None:
             self.main_loss = ProxyAnchorLoss(
                 num_classes=self._num_classes,
                 **self._proxy_anchor_params
@@ -108,27 +103,16 @@ class CathSupConModel(L.LightningModule):
         embeddings, labels = batch
         outputs = self(embeddings)
         
-        total_loss = 0.0
-        if self.loss_weight > 0:
-            loss = self.main_loss(outputs['projection'], labels)
-            total_loss += self.loss_weight * loss
-            self.log(
-                f'{stage}/{self.loss_name}_loss',
-                loss,
-                on_step=False,
-                on_epoch=True,
-                sync_dist=True
-            )
-        
+        loss = self.main_loss(outputs['projection'], labels)
         self.log(
             f'{stage}/loss',
-            total_loss,
+            loss,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True
         )
-        return total_loss
+        return loss
     
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, batch_idx, 'train')
