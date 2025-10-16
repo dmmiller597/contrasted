@@ -38,24 +38,25 @@ model:
   dropout: 0.1
   loss_type: supcon
   loss_params:
-    temperature: 0.07  # SupCon
-    margin: 0.1        # ProxyAnchor
-    alpha: 32.0        # ProxyAnchor
+    temperature: 0.05
   learning_rate: ${optimizer.learning_rate}
   weight_decay: ${optimizer.weight_decay}
   scheduler_type: ${scheduler.type}
   scheduler_params: ${scheduler.params}
-  warmup_epochs: 0  # Set >0 to enable linear warmup
+  warmup_epochs: 10
 
 optimizer:
   learning_rate: 0.0001
   weight_decay: 0.0001
 
 scheduler:
-  type: cosine
+  type: onecycle
   params:
-    T_max: ${trainer.max_epochs}
-    eta_min: 0.0
+    max_lr: 0.001
+    pct_start: 0.3
+    anneal_strategy: cos
+    div_factor: 25.0
+    final_div_factor: 10000.0
 
 trainer:
   max_epochs: 100

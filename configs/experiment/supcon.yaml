@@ -1,4 +1,4 @@
 # @package _global_
 
-# This experiment uses the base config defaults (supcon loss + CE)
-# Only override if you need to change from base values
+# SupCon uses the optimized defaults from train.yaml
+# No overrides needed - all best parameters are set as defaults

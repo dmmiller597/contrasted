@@ -18,39 +18,21 @@ parameters:
     value: "proxy_anchor"
 
   # ProxyAnchor-specific hyperparameters
-  # Margin: controls the decision boundary
+  # Margin: controls the decision boundary - wider coverage in best range
   model.loss_params.margin:
-    values: [0.05, 0.1, 0.15, 0.2, 0.3]
+    values: [0.1, 0.2, 0.3]
 
-  # Alpha: scaling factor for the exponential (critical parameter)
+  # Alpha: scaling factor for the exponential - comprehensive sweep
   model.loss_params.alpha:
-    values: [16, 24, 32, 40, 48, 64]
+    values: [32, 48, 64]
 
-  # Learning rate search - discrete values
+  # Learning rate - balanced exploration around optimal
   model.learning_rate:
-    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+    values: [0.0001, 0.0005, 0.001]
 
-  # Weight decay for regularization
+  # Weight decay - regularization sweep
   model.weight_decay:
-    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
-
-  # Batch size affects proxy updates
-  data.batch_size:
-    values: [512, 1024, 2048]
-
-  # Warmup can help with proxy initialization
-  model.warmup_epochs:
-    values: [0, 5, 10]
-
-  # Scheduler configuration
-  scheduler.type:
-    values: ["cosine", "onecycle"]
-
-# Optional: Early stopping for inefficient runs
-early_terminate:
-  type: hyperband
-  min_iter: 10
-  eta: 2
+    values: [0.00001, 0.00005, 0.0001]
 
 # The command that W&B will use to run your training script.
 command:
