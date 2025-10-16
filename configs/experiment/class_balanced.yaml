@@ -1,7 +1,0 @@
-# @package _global_
-# Experiment: Weighted sampling for class imbalance
-
-datamodule:
-  use_weighted_sampling: true
-  batch_size: 512  # Smaller batch for better diversity with weighted sampling
-
