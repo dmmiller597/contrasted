@@ -56,19 +56,12 @@ class CathSupConModel(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         
-        # Compile the projection head for improved performance (CUDA only)
-        # torch.compile() is not supported on MPS as of PyTorch 2.x
-        projection_head = ProjectionHead(
+        self.projection_head = ProjectionHead(
             input_dim=input_dim,
             hidden_dims=proj_hidden_dims,
             output_dim=proj_output_dim,
             dropout=dropout,
         )
-        
-        if torch.cuda.is_available():
-            self.projection_head = torch.compile(projection_head)
-        else:
-            self.projection_head = projection_head
         
         # Lazy initialization for proxy-anchor loss
         self._num_classes = num_classes
