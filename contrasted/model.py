@@ -7,7 +7,7 @@ from .losses import SupConLoss, ProxyAnchorLoss
 
 
 class ProjectionHead(nn.Module):
-    """MLP projection head for contrastive learning."""
+    """MLP projection head with L2-normalized outputs."""
     
     def __init__(
         self,
@@ -31,7 +31,8 @@ class ProjectionHead(nn.Module):
         self.projector = nn.Sequential(*layers)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.projector(x)
+        x = self.projector(x)
+        return torch.nn.functional.normalize(x, p=2, dim=1)
 
 
 class CathSupConModel(L.LightningModule):
@@ -71,8 +72,7 @@ class CathSupConModel(L.LightningModule):
         
         if loss_type == "supcon":
             self.main_loss = SupConLoss(
-                temperature=loss_params.get("temperature", 0.07),
-                normalize=loss_params.get("normalize", True),
+                temperature=loss_params.get("temperature", 0.07)
             )
             self.loss_name = "supcon"
         elif loss_type == "proxy_anchor":

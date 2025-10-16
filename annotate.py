@@ -129,9 +129,7 @@ def annotate_sequences(
         outputs = model(batch_tensor)
         projected = outputs['projection']
         
-        # Normalize for cosine similarity
-        projected_norm = F.normalize(projected, p=2, dim=1)
-        query_vectors = projected_norm.cpu().numpy().astype(np.float32)
+        query_vectors = projected.cpu().numpy().astype(np.float32)
         
         # Search index (returns similarity scores for IndexFlatIP)
         similarities, indices = index.search(query_vectors, k)

@@ -9,11 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class KNNEvaluationCallback(L.Callback):
-    """1-NN evaluation using cosine similarity on projected embeddings.
-    
-    Caches normalized training embeddings (GPU if fits, else CPU).
-    Processes validation/test in chunks for memory efficiency.
-    """
+    """1-NN evaluation using cosine similarity. Caches train embeddings (GPU or CPU)."""
     
     def __init__(
         self, 
@@ -44,7 +40,7 @@ class KNNEvaluationCallback(L.Callback):
         # Update training embeddings cache if needed
         if self._last_cache_epoch != trainer.current_epoch:
             logger.info(f"Caching training embeddings for k-NN evaluation (epoch {trainer.current_epoch})")
-            train_embs, train_labs = self._collect_and_normalize_embeddings(
+            train_embs, train_labs = self._collect_embeddings(
                 trainer, pl_module, trainer.datamodule.train_dataloader()
             )
             
@@ -67,7 +63,7 @@ class KNNEvaluationCallback(L.Callback):
             self._last_cache_epoch = trainer.current_epoch
         
         # Collect validation embeddings
-        val_embeddings, val_labels = self._collect_and_normalize_embeddings(
+        val_embeddings, val_labels = self._collect_embeddings(
             trainer, pl_module, trainer.datamodule.val_dataloader()
         )
         
@@ -98,7 +94,7 @@ class KNNEvaluationCallback(L.Callback):
         # Ensure training embeddings are cached
         if self._train_embeddings_norm is None or self._train_labels is None:
             logger.info("Caching training embeddings for k-NN evaluation (test phase)")
-            train_embs, train_labs = self._collect_and_normalize_embeddings(
+            train_embs, train_labs = self._collect_embeddings(
                 trainer, pl_module, trainer.datamodule.train_dataloader()
             )
             try:
@@ -117,7 +113,7 @@ class KNNEvaluationCallback(L.Callback):
                     raise
         
         # Collect test embeddings
-        test_embeddings, test_labels = self._collect_and_normalize_embeddings(
+        test_embeddings, test_labels = self._collect_embeddings(
             trainer, pl_module, trainer.datamodule.test_dataloader()
         )
         
@@ -142,13 +138,13 @@ class KNNEvaluationCallback(L.Callback):
             )
     
     @torch.no_grad()
-    def _collect_and_normalize_embeddings(
+    def _collect_embeddings(
         self, 
         trainer: L.Trainer, 
         pl_module: L.LightningModule,
         dataloader
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Collect and L2-normalize projected embeddings from dataloader."""
+        """Collect L2-normalized embeddings from dataloader."""
         pl_module.eval()
         
         all_embeddings = []
@@ -158,13 +154,10 @@ class KNNEvaluationCallback(L.Callback):
             embeddings, labels = batch
             embeddings = embeddings.to(pl_module.device)
             
-            # Get projected embeddings
             outputs = pl_module(embeddings)
             projected = outputs['projection']
             
-            # Normalize and move to CPU
-            projected_norm = F.normalize(projected, p=2, dim=1)
-            all_embeddings.append(projected_norm.cpu())
+            all_embeddings.append(projected.cpu())
             all_labels.append(labels)
         
         embeddings_norm = torch.cat(all_embeddings, dim=0)
@@ -180,7 +173,7 @@ class KNNEvaluationCallback(L.Callback):
         query_labels: torch.Tensor,
         device: torch.device
     ) -> Dict[str, float]:
-        """Compute 1-NN classification metrics using cosine similarity in chunks."""
+        """Compute 1-NN metrics using cosine similarity in chunks."""
         n_queries = query_embeddings_norm.shape[0]
         
         # Move reference to GPU if not already there

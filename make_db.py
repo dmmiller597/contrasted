@@ -64,9 +64,7 @@ def embed_sequences(
         outputs = model(batch_tensor)
         projected = outputs['projection']
         
-        # Normalize for cosine similarity
-        projected_norm = F.normalize(projected, p=2, dim=1)
-        all_embeddings.append(projected_norm.cpu().numpy())
+        all_embeddings.append(projected.cpu().numpy())
     
     embeddings_matrix = np.vstack(all_embeddings)
     return embeddings_matrix, domain_ids

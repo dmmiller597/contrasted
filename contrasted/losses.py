@@ -8,21 +8,20 @@ EPS = 1e-12
 
 
 class SupConLoss(nn.Module):
-    """Supervised Contrastive Learning (Khosla et al., NeurIPS 2020)."""
+    """Supervised Contrastive Learning (Khosla et al., NeurIPS 2020).
     
-    def __init__(self, temperature: float = 0.07, normalize: bool = True):
+    Expects L2-normalized embeddings from ProjectionHead.
+    """
+    
+    def __init__(self, temperature: float = 0.07):
         super().__init__()
         if temperature <= 0:
             raise ValueError("Temperature must be positive.")
         self.temperature = temperature
-        self.normalize = normalize
     
     def forward(self, embeddings: Tensor, labels: Tensor) -> Tensor:
         device = embeddings.device
         batch_size = embeddings.shape[0]
-        
-        if self.normalize:
-            embeddings = F.normalize(embeddings, p=2, dim=1)
         
         similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
         logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
@@ -42,11 +41,14 @@ class SupConLoss(nn.Module):
         return -mean_log_prob_pos.mean()
     
     def __repr__(self) -> str:
-        return f"SupConLoss(temperature={self.temperature}, normalize={self.normalize})"
+        return f"SupConLoss(temperature={self.temperature})"
 
 
 class ProxyAnchorLoss(nn.Module):
-    """Proxy-Anchor Loss (Kim et al., CVPR 2020)."""
+    """Proxy-Anchor Loss (Kim et al., CVPR 2020).
+    
+    Expects L2-normalized embeddings from ProjectionHead.
+    """
     
     def __init__(
         self, 
@@ -68,8 +70,7 @@ class ProxyAnchorLoss(nn.Module):
         device = embeddings.device
         
         proxies_norm = F.normalize(self.proxies, p=2, dim=1)
-        embeddings_norm = F.normalize(embeddings, p=2, dim=1)
-        cos_sim = F.linear(embeddings_norm, proxies_norm)
+        cos_sim = F.linear(embeddings, proxies_norm)
         
         P_one_hot = F.one_hot(labels, num_classes=self.num_classes).float().to(device)
         N_one_hot = 1.0 - P_one_hot
