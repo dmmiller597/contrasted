@@ -2,69 +2,15 @@ import h5py
 import torch
 import lightning as L
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from typing import Dict, List, Optional, Tuple
+from collections import Counter
+import numpy as np
 import logging
 
+from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id
+
 logger = logging.getLogger(__name__)
-
-
-def parse_fasta_header(header: str) -> str:
-    """Extract domain_id from FASTA header.
-    
-    Format: >cath|{cath_release}|{domain_id}/{start}-{end}
-    Returns: domain_id (e.g., '12e8H01')
-    """
-    parts = header.strip().lstrip('>').split('|')
-    if len(parts) >= 3:
-        return parts[2].split('/')[0]
-    raise ValueError(f"Invalid FASTA header: {header}")
-
-
-def fasta_to_h5_key(header: str) -> str:
-    """Convert FASTA header to HDF5 key format.
-    
-    FASTA: >cath|4_4_0|12e8H01/1-113
-    H5:    cath|4_4_0|12e8H01_1-113
-    """
-    return header.strip().lstrip('>').replace('/', '_')
-
-
-def load_h5_keys_from_fasta(fasta_path: Path) -> List[str]:
-    """Read FASTA file and return list of HDF5 keys."""
-    h5_keys = []
-    with open(fasta_path, "r") as f:
-        for line in f:
-            if line.startswith(">"):
-                try:
-                    h5_keys.append(fasta_to_h5_key(line))
-                except ValueError as e:
-                    logger.warning(f"Could not parse header: {line.strip()} - {e}")
-    return h5_keys
-
-
-def load_labels(label_path: Path) -> Tuple[Dict[str, int], Dict[int, str]]:
-    """Load CATH superfamily labels.
-    
-    File format: {domain_id}\\t{superfamily_code}
-    Returns: (domain_id -> sf_idx, sf_idx -> sf_code)
-    """
-    id_to_sf_idx: Dict[str, int] = {}
-    sf_to_idx: Dict[str, int] = {}
-    
-    with open(label_path, "r") as f:
-        for line in f:
-            if line.startswith("#"):
-                continue
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                domain_id, superfamily = parts[0], parts[1]
-                if superfamily not in sf_to_idx:
-                    sf_to_idx[superfamily] = len(sf_to_idx)
-                id_to_sf_idx[domain_id] = sf_to_idx[superfamily]
-
-    idx_to_sf = {v: k for k, v in sf_to_idx.items()}
-    return id_to_sf_idx, idx_to_sf
 
 
 class CathEmbeddingDataset(Dataset):
@@ -81,7 +27,7 @@ class CathEmbeddingDataset(Dataset):
         
         for h5_key in h5_keys:
             try:
-                domain_id = h5_key.split('|')[2].split('_')[0]
+                domain_id = extract_domain_id(h5_key)
                 if domain_id in labels:
                     self.h5_keys.append(h5_key)
                     self.domain_ids.append(domain_id)
@@ -135,6 +81,7 @@ class CathDataModule(L.LightningDataModule):
         batch_size: int = 64,
         num_workers: int = 4,
         pin_memory: bool = True,
+        use_weighted_sampling: bool = False,
     ):
         super().__init__()
         self.train_fasta = Path(train_fasta)
@@ -146,6 +93,7 @@ class CathDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.use_weighted_sampling = use_weighted_sampling
 
         if self.pin_memory and torch.backends.mps.is_available():
             logger.warning("pin_memory=True is not supported on MPS. Disabling pin_memory.")
@@ -190,15 +138,38 @@ class CathDataModule(L.LightningDataModule):
             logger.info(f"Test: {len(self.test_dataset)}")
 
     def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            worker_init_fn=worker_init_fn,
-            persistent_workers=self.num_workers > 0,
-        )
+        if self.use_weighted_sampling:
+            # Compute sample weights: inverse frequency
+            labels = [self.labels[domain_id] for domain_id in self.train_dataset.domain_ids]
+            class_counts = Counter(labels)
+            class_weights = {cls: 1.0 / count for cls, count in class_counts.items()}
+            sample_weights = [class_weights[label] for label in labels]
+            
+            sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True
+            )
+            
+            return DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                sampler=sampler,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                worker_init_fn=worker_init_fn,
+                persistent_workers=self.num_workers > 0,
+            )
+        else:
+            return DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                worker_init_fn=worker_init_fn,
+                persistent_workers=self.num_workers > 0,
+            )
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(

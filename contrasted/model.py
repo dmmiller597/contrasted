@@ -50,6 +50,7 @@ class CathSupConModel(L.LightningModule):
         weight_decay: float = 0.0001,
         scheduler_type: str = "onecycle",
         scheduler_params: Optional[Dict[str, Any]] = None,
+        warmup_epochs: int = 0,
         num_classes: Optional[int] = None,
     ):
         super().__init__()
@@ -172,6 +173,21 @@ class CathSupConModel(L.LightningModule):
                 T_max=scheduler_params.get("T_max", self.trainer.max_epochs),
                 eta_min=scheduler_params.get("eta_min", 0.0),
             )
+            
+            # Add linear warmup if requested
+            if self.hparams.warmup_epochs > 0:
+                def warmup_lambda(epoch):
+                    if epoch < self.hparams.warmup_epochs:
+                        return float(epoch) / float(self.hparams.warmup_epochs)
+                    return 1.0
+                
+                warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lambda)
+                scheduler = torch.optim.lr_scheduler.SequentialLR(
+                    optimizer,
+                    schedulers=[warmup_scheduler, scheduler],
+                    milestones=[self.hparams.warmup_epochs]
+                )
+            
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},

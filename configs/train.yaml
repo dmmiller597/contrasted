@@ -21,6 +21,7 @@ datamodule:
   batch_size: ${data.batch_size}
   num_workers: ${data.num_workers}
   pin_memory: ${data.pin_memory}
+  use_weighted_sampling: false  # Set to true for class balancing
 
 data:
   batch_size: 1024
@@ -44,6 +45,7 @@ model:
   weight_decay: ${optimizer.weight_decay}
   scheduler_type: ${scheduler.type}
   scheduler_params: ${scheduler.params}
+  warmup_epochs: 0  # Set >0 to enable linear warmup
 
 optimizer:
   learning_rate: 0.0001
@@ -79,11 +81,12 @@ logging:
     save_dir: ${hydra:run.dir}/wandb
   callbacks:
     - _target_: lightning.pytorch.callbacks.ModelCheckpoint
-      monitor: val/knn_macro_f1
+      monitor: val/knn_balanced_accuracy
       mode: max
       save_top_k: 1
-      save_last: true
-      filename: "epoch={epoch:02d}-knn_f1={val/knn_macro_f1:.4f}"
+      save_last: false
+      enable_version_counter: false
+      filename: "epoch={epoch:02d}-val_balanced_acc={val/knn_balanced_accuracy:.4f}"
       dirpath: ${hydra:run.dir}/checkpoints
     - _target_: lightning.pytorch.callbacks.EarlyStopping
       monitor: val/knn_macro_f1

@@ -5,7 +5,7 @@ from hydra.utils import instantiate
 from contrasted.utils import set_seed
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
+@hydra.main(version_base=None, config_path="configs", config_name="train")
 def main(cfg: DictConfig):
     set_seed(cfg.seed, deterministic=cfg.trainer.deterministic)
     

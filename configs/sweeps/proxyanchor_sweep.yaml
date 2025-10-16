@@ -1,0 +1,61 @@
+# To run this sweep, execute:
+# 1. Login to W&B: wandb login
+# 2. Initialize the sweep: wandb sweep configs/sweeps/proxyanchor_sweep.yaml
+# 3. Run the agent: wandb agent <SWEEP_ID>
+
+program: train.py
+method: bayes
+project: contrasted
+name: ProxyAnchor_Sweep
+metric:
+  name: val/knn_balanced_accuracy
+  goal: maximize
+
+# Hyperparameters to search
+parameters:
+  # Loss configuration
+  model.loss_type:
+    value: "proxy_anchor"
+
+  # ProxyAnchor-specific hyperparameters
+  # Margin: controls the decision boundary
+  model.loss_params.margin:
+    values: [0.05, 0.1, 0.15, 0.2, 0.3]
+
+  # Alpha: scaling factor for the exponential (critical parameter)
+  model.loss_params.alpha:
+    values: [16, 24, 32, 40, 48, 64]
+
+  # Learning rate search - discrete values
+  model.learning_rate:
+    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+
+  # Weight decay for regularization
+  model.weight_decay:
+    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+
+  # Batch size affects proxy updates
+  data.batch_size:
+    values: [512, 1024, 2048]
+
+  # Warmup can help with proxy initialization
+  model.warmup_epochs:
+    values: [0, 5, 10]
+
+  # Scheduler configuration
+  scheduler.type:
+    values: ["cosine", "onecycle"]
+
+# Optional: Early stopping for inefficient runs
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  eta: 2
+
+# The command that W&B will use to run your training script.
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args_no_hyphens}
+

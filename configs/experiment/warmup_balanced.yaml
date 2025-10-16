@@ -1,0 +1,15 @@
+# @package _global_
+# Experiment: Warmup + weighted sampling combined
+
+model:
+  warmup_epochs: 5
+  learning_rate: 0.001
+  scheduler_type: cosine
+  scheduler_params:
+    T_max: ${trainer.max_epochs}
+    eta_min: 1e-6
+
+datamodule:
+  use_weighted_sampling: true
+  batch_size: 512
+

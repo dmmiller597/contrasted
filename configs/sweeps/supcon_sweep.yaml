@@ -1,0 +1,56 @@
+# To run this sweep, execute:
+# 1. Login to W&B: wandb login
+# 2. Initialize the sweep: wandb sweep configs/sweeps/supcon_sweep.yaml
+# 3. Run the agent: wandb agent <SWEEP_ID>
+
+program: train.py
+method: bayes
+project: contrasted
+name: SupCon_Sweep
+metric:
+  name: val/knn_balanced_accuracy
+  goal: maximize
+
+# Hyperparameters to search
+parameters:
+  # Loss configuration
+  model.loss_type:
+    value: "supcon"
+
+  # Temperature is THE most critical hyperparameter for SupCon
+  model.loss_params.temperature:
+    values: [0.03, 0.05, 0.07, 0.1, 0.15, 0.2]
+
+  # Learning rate search - discrete values
+  model.learning_rate:
+    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+
+  # Weight decay for regularization
+  model.weight_decay:
+    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+
+  # Batch size affects loss dynamics
+  data.batch_size:
+    values: [512, 1024, 2048]
+
+  # Warmup can help with training stability
+  model.warmup_epochs:
+    values: [0, 5, 10]
+
+  # Scheduler configuration
+  scheduler.type:
+    values: ["cosine", "onecycle"]
+
+# Optional: Early stopping for inefficient runs
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  eta: 2
+
+# The command that W&B will use to run your training script.
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args_no_hyphens}
+

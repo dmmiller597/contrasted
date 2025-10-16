@@ -3,5 +3,5 @@
 model:
   loss_type: proxy_anchor
   loss_params:
-    margin: 0.1
+    margin: 0.2
     alpha: 32.0
