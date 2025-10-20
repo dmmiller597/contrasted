@@ -126,8 +126,7 @@ def annotate_sequences(
         
         # Stack and project
         batch_tensor = torch.stack(batch_embs).to(device)
-        outputs = model(batch_tensor)
-        projected = outputs['projection']
+        projected = model(batch_tensor)
         
         query_vectors = projected.cpu().numpy().astype(np.float32)
         

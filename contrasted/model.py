@@ -84,8 +84,8 @@ class CathSupConModel(L.LightningModule):
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
     
-    def forward(self, embeddings: torch.Tensor) -> Dict[str, torch.Tensor]:
-        return {'projection': self.projection_head(embeddings)}
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self.projection_head(embeddings)
     
     def setup(self, stage: str):
         """Initialize components that require num_classes from datamodule."""
@@ -101,9 +101,9 @@ class CathSupConModel(L.LightningModule):
     
     def _shared_step(self, batch, batch_idx, stage: str):
         embeddings, labels = batch
-        outputs = self(embeddings)
+        projected = self(embeddings)
         
-        loss = self.main_loss(outputs['projection'], labels)
+        loss = self.main_loss(projected, labels)
         self.log(
             f'{stage}/loss',
             loss,

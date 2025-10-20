@@ -61,8 +61,7 @@ def embed_sequences(
             
         # Stack and project
         batch_tensor = torch.stack(batch_embs).to(device)
-        outputs = model(batch_tensor)
-        projected = outputs['projection']
+        projected = model(batch_tensor)
         
         all_embeddings.append(projected.cpu().numpy())
     
