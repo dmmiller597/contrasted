@@ -13,6 +13,7 @@ from tqdm import tqdm
 from collections import Counter
 import logging
 import time
+import warnings
 
 from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id
 from contrasted.model import CathSupConModel
@@ -290,9 +291,11 @@ def main(cfg: DictConfig):
             # Get all unique classes from both y_true and y_pred to avoid sklearn warning
             all_classes = sorted(set(y_true) | set(y_pred))
             
-            accuracy = accuracy_score(y_true, y_pred)
-            balanced_acc = balanced_accuracy_score(y_true, y_pred, labels=all_classes)
-            macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0, labels=all_classes)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='y_pred contains classes not in y_true')
+                accuracy = accuracy_score(y_true, y_pred)
+                balanced_acc = balanced_accuracy_score(y_true, y_pred)
+                macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0, labels=all_classes)
             
             logger.info(f"\n{'='*50}")
             logger.info(f"Performance Metrics (on {len(valid_df)} valid predictions):")
