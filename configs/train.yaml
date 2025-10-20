@@ -97,7 +97,7 @@ logging:
     - _target_: lightning.pytorch.callbacks.LearningRateMonitor
       logging_interval: step
     - _target_: contrasted.callbacks.KNNEvaluationCallback
-      eval_every_n_epochs: 5
+      eval_every_n_epochs: 1
       chunk_size: 2048
 
 # Execution controls
