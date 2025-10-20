@@ -68,7 +68,7 @@ class KNNEvaluationCallback(L.Callback):
         
         # Update training embeddings cache if needed
         if self._last_cache_epoch != trainer.current_epoch:
-            logger.info(f"Caching training embeddings for k-NN evaluation (epoch {trainer.current_epoch})")
+            logger.info(f"Caching training embeddings for k-NN evaluation")
             train_embs, train_labs = self._collect_embeddings(
                 trainer, pl_module, trainer.datamodule.train_dataloader()
             )
