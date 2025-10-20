@@ -12,10 +12,22 @@ from contrasted.utils import extract_domain_id, load_h5_keys_from_fasta, load_la
 class CathEmbeddingDataset(Dataset):
     """CATH protein embeddings from HDF5."""
 
-    def __init__(self, h5_path: Path, h5_keys: List[str], labels: Dict[str, int]):
+    def __init__(
+        self,
+        h5_path: Path,
+        h5_keys: List[str],
+        labels: Dict[str, int],
+        cache_embeddings: bool = True,
+    ):
         self.h5_path = h5_path
+        self.cache_embeddings = cache_embeddings
         self._h5_file = None
+        self._embedding_cache: Optional[Dict[str, torch.Tensor]] = None
         self.samples = self._filter_samples(h5_keys, labels)
+        
+        # Pre-load all embeddings if caching is enabled
+        if self.cache_embeddings:
+            self._load_all_embeddings()
 
     def _filter_samples(self, h5_keys: List[str], labels: Dict[str, int]) -> List[Tuple[str, int]]:
         """Keep only keys with valid labels."""
@@ -29,15 +41,34 @@ class CathEmbeddingDataset(Dataset):
                 continue
         return samples
 
+    def _load_all_embeddings(self) -> None:
+        """Pre-load all embeddings into memory for fast access."""
+        self._embedding_cache = {}
+        with h5py.File(self.h5_path, 'r') as f:
+            for key, _ in self.samples:
+                self._embedding_cache[key] = torch.from_numpy(f[key][:]).float()
+
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         key, label = self.samples[idx]
-        if self._h5_file is None:
-            self._h5_file = h5py.File(self.h5_path, 'r')
-        embedding = self._h5_file[key][:]
-        return torch.from_numpy(embedding).float(), label
+        
+        # Use cached embedding if available
+        if self._embedding_cache is not None:
+            embedding = self._embedding_cache[key]
+        else:
+            # Lazy load from disk
+            if self._h5_file is None:
+                self._h5_file = h5py.File(self.h5_path, 'r')
+            embedding = torch.from_numpy(self._h5_file[key][:]).float()
+        
+        return embedding, label
+
+    def __del__(self):
+        """Ensure HDF5 file is closed."""
+        if self._h5_file is not None:
+            self._h5_file.close()
 
 
 class CathDataModule(L.LightningDataModule):
@@ -54,6 +85,7 @@ class CathDataModule(L.LightningDataModule):
         num_workers: int = 4,
         pin_memory: bool = True,
         use_weighted_sampling: bool = False,
+        cache_embeddings: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -64,6 +96,7 @@ class CathDataModule(L.LightningDataModule):
         self.label_file = Path(label_file)
         self.embedding_file = Path(embedding_file)
         self.pin_memory = pin_memory and not torch.backends.mps.is_available()
+        self.cache_embeddings = cache_embeddings
         
         self.labels: Optional[Dict[str, int]] = None
         self.idx_to_label: Optional[Dict[int, str]] = None
@@ -87,7 +120,8 @@ class CathDataModule(L.LightningDataModule):
         return CathEmbeddingDataset(
             self.embedding_file,
             load_h5_keys_from_fasta(fasta_path),
-            self.labels
+            self.labels,
+            cache_embeddings=self.cache_embeddings
         )
 
     def _get_weighted_sampler(self) -> WeightedRandomSampler:
