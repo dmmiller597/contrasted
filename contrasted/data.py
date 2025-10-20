@@ -39,12 +39,6 @@ class CathEmbeddingDataset(Dataset):
         if skipped > 0:
             logger.info(f"Skipped {skipped} samples without labels. Kept {len(self.h5_keys)}.")
 
-    @property
-    def h5_file(self):
-        if self._h5_file is None:
-            self._h5_file = h5py.File(self.h5_path, 'r')
-        return self._h5_file
-
     def __len__(self) -> int:
         return len(self.h5_keys)
 
@@ -52,20 +46,17 @@ class CathEmbeddingDataset(Dataset):
         h5_key = self.h5_keys[idx]
         domain_id = self.domain_ids[idx]
         
+        # Lazy-open file handle per worker (safe across process boundaries)
+        if self._h5_file is None:
+            self._h5_file = h5py.File(self.h5_path, 'r')
+        
         try:
-            embedding = self.h5_file[h5_key][:]
+            embedding = self._h5_file[h5_key][:]
             label = self.labels[domain_id]
             return torch.from_numpy(embedding).float(), label
         except KeyError:
             logger.error(f"Missing embedding for key: {h5_key}")
             raise KeyError(f"Missing embedding for key: {h5_key}")
-
-
-def worker_init_fn(worker_id: int):
-    """Initialize worker with separate HDF5 file handle."""
-    worker_info = torch.utils.data.get_worker_info()
-    if worker_info is not None:
-        worker_info.dataset._h5_file = None
 
 
 class CathDataModule(L.LightningDataModule):
@@ -157,7 +148,6 @@ class CathDataModule(L.LightningDataModule):
                 sampler=sampler,
                 num_workers=self.num_workers,
                 pin_memory=self.pin_memory,
-                worker_init_fn=worker_init_fn,
                 persistent_workers=self.num_workers > 0,
             )
         else:
@@ -167,7 +157,6 @@ class CathDataModule(L.LightningDataModule):
                 shuffle=True,
                 num_workers=self.num_workers,
                 pin_memory=self.pin_memory,
-                worker_init_fn=worker_init_fn,
                 persistent_workers=self.num_workers > 0,
             )
 
@@ -177,7 +166,6 @@ class CathDataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            worker_init_fn=worker_init_fn,
             persistent_workers=self.num_workers > 0,
         )
 
@@ -187,6 +175,5 @@ class CathDataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            worker_init_fn=worker_init_fn,
             persistent_workers=self.num_workers > 0,
         )
