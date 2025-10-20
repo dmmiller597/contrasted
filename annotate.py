@@ -287,9 +287,12 @@ def main(cfg: DictConfig):
             y_true = valid_df['true_annotation'].values
             y_pred = valid_df['predicted_annotation'].values
             
+            # Get all unique classes from both y_true and y_pred to avoid sklearn warning
+            all_classes = sorted(set(y_true) | set(y_pred))
+            
             accuracy = accuracy_score(y_true, y_pred)
-            balanced_acc = balanced_accuracy_score(y_true, y_pred)
-            macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+            balanced_acc = balanced_accuracy_score(y_true, y_pred, labels=all_classes)
+            macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0, labels=all_classes)
             
             logger.info(f"\n{'='*50}")
             logger.info(f"Performance Metrics (on {len(valid_df)} valid predictions):")
