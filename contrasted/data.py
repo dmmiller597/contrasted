@@ -1,50 +1,47 @@
 import h5py
-import torch
 import lightning as L
-from pathlib import Path
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from typing import Dict, List, Optional, Tuple
+import torch
 from collections import Counter
-import logging
+from pathlib import Path
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from typing import Dict, List, Optional, Tuple
 
-from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id
-
-logger = logging.getLogger(__name__)
+from contrasted.utils import extract_domain_id, load_h5_keys_from_fasta, load_labels
 
 
 class CathEmbeddingDataset(Dataset):
-    """Dataset for CATH embeddings stored in HDF5."""
+    """CATH protein embeddings from HDF5."""
 
     def __init__(self, h5_path: Path, h5_keys: List[str], labels: Dict[str, int]):
         self.h5_path = h5_path
         self._h5_file = None
-        
-        # Filter: only keep keys with valid labels
-        self.samples = []  # (h5_key, label) tuples
-        for h5_key in h5_keys:
+        self.samples = self._filter_samples(h5_keys, labels)
+
+    def _filter_samples(self, h5_keys: List[str], labels: Dict[str, int]) -> List[Tuple[str, int]]:
+        """Keep only keys with valid labels."""
+        samples = []
+        for key in h5_keys:
             try:
-                domain_id = extract_domain_id(h5_key)
+                domain_id = extract_domain_id(key)
                 if domain_id in labels:
-                    self.samples.append((h5_key, labels[domain_id]))
+                    samples.append((key, labels[domain_id]))
             except (ValueError, IndexError):
                 continue
+        return samples
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        h5_key, label = self.samples[idx]
-        
-        # Lazy-open H5 file per worker (multiprocessing-safe)
+        key, label = self.samples[idx]
         if self._h5_file is None:
             self._h5_file = h5py.File(self.h5_path, 'r')
-        
-        embedding = self._h5_file[h5_key][:]
+        embedding = self._h5_file[key][:]
         return torch.from_numpy(embedding).float(), label
 
 
 class CathDataModule(L.LightningDataModule):
-    """Lightning DataModule for CATH protein superfamily classification."""
+    """CATH protein superfamily classification data."""
 
     def __init__(
         self,
@@ -59,19 +56,15 @@ class CathDataModule(L.LightningDataModule):
         use_weighted_sampling: bool = False,
     ):
         super().__init__()
+        self.save_hyperparameters()
+        
         self.train_fasta = Path(train_fasta)
         self.val_fasta = Path(val_fasta)
         self.test_fasta = Path(test_fasta)
         self.label_file = Path(label_file)
         self.embedding_file = Path(embedding_file)
-        
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.use_weighted_sampling = use_weighted_sampling
-        
-        # Disable pin_memory on MPS (not supported)
         self.pin_memory = pin_memory and not torch.backends.mps.is_available()
-
+        
         self.labels: Optional[Dict[str, int]] = None
         self.idx_to_label: Optional[Dict[int, str]] = None
 
@@ -80,58 +73,52 @@ class CathDataModule(L.LightningDataModule):
         return len(self.idx_to_label) if self.idx_to_label else 0
 
     def setup(self, stage: Optional[str] = None):
-        # Load labels once
-        self.labels, self.idx_to_label = load_labels(self.label_file)
+        if self.labels is None:
+            self.labels, self.idx_to_label = load_labels(self.label_file)
 
-        if stage == "fit" or stage is None:
-            self.train_dataset = CathEmbeddingDataset(
-                self.embedding_file,
-                load_h5_keys_from_fasta(self.train_fasta),
-                self.labels
-            )
-            self.val_dataset = CathEmbeddingDataset(
-                self.embedding_file,
-                load_h5_keys_from_fasta(self.val_fasta),
-                self.labels
-            )
+        if stage in ("fit", None):
+            self.train_dataset = self._create_dataset(self.train_fasta)
+            self.val_dataset = self._create_dataset(self.val_fasta)
         
-        if stage == "test" or stage is None:
-            self.test_dataset = CathEmbeddingDataset(
-                self.embedding_file,
-                load_h5_keys_from_fasta(self.test_fasta),
-                self.labels
-            )
+        if stage in ("test", None):
+            self.test_dataset = self._create_dataset(self.test_fasta)
 
-    def _get_sampler(self):
-        """Create weighted sampler for class balancing."""
+    def _create_dataset(self, fasta_path: Path) -> CathEmbeddingDataset:
+        return CathEmbeddingDataset(
+            self.embedding_file,
+            load_h5_keys_from_fasta(fasta_path),
+            self.labels
+        )
+
+    def _get_weighted_sampler(self) -> WeightedRandomSampler:
         labels = [label for _, label in self.train_dataset.samples]
         class_counts = Counter(labels)
         weights = [1.0 / class_counts[label] for label in labels]
         return WeightedRandomSampler(weights, len(weights), replacement=True)
 
     def train_dataloader(self) -> DataLoader:
+        sampler = self._get_weighted_sampler() if self.hparams.use_weighted_sampling else None
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
-            sampler=self._get_sampler() if self.use_weighted_sampling else None,
-            shuffle=not self.use_weighted_sampling,
-            num_workers=self.num_workers,
+            batch_size=self.hparams.batch_size,
+            sampler=sampler,
+            shuffle=sampler is None,
+            num_workers=self.hparams.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=self.hparams.num_workers > 0,
         )
 
     def val_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.val_dataset)
+        return self._dataloader(self.val_dataset)
 
     def test_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.test_dataset)
+        return self._dataloader(self.test_dataset)
 
-    def _create_dataloader(self, dataset) -> DataLoader:
-        """Create standard dataloader for val/test."""
+    def _dataloader(self, dataset: Dataset) -> DataLoader:
         return DataLoader(
             dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
+            batch_size=self.hparams.batch_size,
+            num_workers=self.hparams.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=self.hparams.num_workers > 0,
         )
