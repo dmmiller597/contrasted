@@ -21,7 +21,7 @@ datamodule:
   batch_size: ${data.batch_size}
   num_workers: ${data.num_workers}
   pin_memory: ${data.pin_memory}
-  use_weighted_sampling: false  # Set to true for class balancing
+  use_weighted_sampling: true  # Set to true for class balancing
 
 data:
   batch_size: 1024

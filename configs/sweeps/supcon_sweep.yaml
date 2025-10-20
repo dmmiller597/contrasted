@@ -24,11 +24,9 @@ parameters:
 
   # Learning rate - focused range around best values
   model.learning_rate:
-    values: [0.00005, 0.0001, 0.0005]
+    values: [0.00001, 0.00005, 0.0001, 0.0003, 0.0005, 0.001, 0.003]
 
-  # Weight decay - regularization sweep in promising range
-  model.weight_decay:
-    values: [0.00005, 0.0001, 0.0005]
+
 
 
 
