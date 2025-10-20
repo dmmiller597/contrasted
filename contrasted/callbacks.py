@@ -26,6 +26,34 @@ class KNNEvaluationCallback(L.Callback):
         self._cache_device: Optional[torch.device] = None
         self._last_cache_epoch: int = -1
     
+    def _cache_train_embeddings_with_fallback(
+        self, 
+        train_embs: torch.Tensor, 
+        train_labs: torch.Tensor, 
+        device: torch.device
+    ) -> None:
+        """Cache training embeddings on GPU with CPU fallback on OOM.
+        
+        Args:
+            train_embs: Training embeddings to cache
+            train_labs: Training labels to cache
+            device: Target device (usually GPU)
+        """
+        try:
+            self._train_embeddings_norm = train_embs.to(device)
+            self._train_labels = train_labs.to(device)
+            self._cache_device = device
+            logger.info(f"  Cached {train_embs.shape[0]} train embeddings on GPU")
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                self._train_embeddings_norm = train_embs
+                self._train_labels = train_labs
+                self._cache_device = torch.device('cpu')
+                logger.info(f"  Cached {train_embs.shape[0]} train embeddings on CPU (GPU OOM)")
+            else:
+                raise
+    
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule):
         """Compute k-NN metrics at validation epoch end."""
         
@@ -43,23 +71,7 @@ class KNNEvaluationCallback(L.Callback):
             train_embs, train_labs = self._collect_embeddings(
                 trainer, pl_module, trainer.datamodule.train_dataloader()
             )
-            
-            # Cache on GPU if fits, otherwise CPU
-            try:
-                self._train_embeddings_norm = train_embs.to(device)
-                self._train_labels = train_labs.to(device)
-                self._cache_device = device
-                logger.info(f"  Cached {train_embs.shape[0]} train embeddings on GPU")
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    torch.cuda.empty_cache()
-                    self._train_embeddings_norm = train_embs
-                    self._train_labels = train_labs
-                    self._cache_device = torch.device('cpu')
-                    logger.info(f"  Cached {train_embs.shape[0]} train embeddings on CPU (GPU OOM)")
-                else:
-                    raise
-            
+            self._cache_train_embeddings_with_fallback(train_embs, train_labs, device)
             self._last_cache_epoch = trainer.current_epoch
         
         # Collect validation embeddings
@@ -97,20 +109,7 @@ class KNNEvaluationCallback(L.Callback):
             train_embs, train_labs = self._collect_embeddings(
                 trainer, pl_module, trainer.datamodule.train_dataloader()
             )
-            try:
-                self._train_embeddings_norm = train_embs.to(device)
-                self._train_labels = train_labs.to(device)
-                self._cache_device = device
-                logger.info(f"  Cached {train_embs.shape[0]} train embeddings on GPU")
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    torch.cuda.empty_cache()
-                    self._train_embeddings_norm = train_embs
-                    self._train_labels = train_labs
-                    self._cache_device = torch.device('cpu')
-                    logger.info(f"  Cached {train_embs.shape[0]} train embeddings on CPU (GPU OOM)")
-                else:
-                    raise
+            self._cache_train_embeddings_with_fallback(train_embs, train_labs, device)
         
         # Collect test embeddings
         test_embeddings, test_labels = self._collect_embeddings(
@@ -154,8 +153,7 @@ class KNNEvaluationCallback(L.Callback):
             embeddings, labels = batch
             embeddings = embeddings.to(pl_module.device)
             
-            outputs = pl_module(embeddings)
-            projected = outputs['projection']
+            projected = pl_module(embeddings)
             
             all_embeddings.append(projected.cpu())
             all_labels.append(labels)
