@@ -209,11 +209,14 @@ class KNNEvaluationCallback(L.Callback):
         y_true = query_labels.numpy()
         y_pred = predicted_labels.numpy()
         
-        # Compute metrics
+        # Get all unique labels (from both reference and query)
+        all_labels = sorted(set(y_true) | set(y_pred))
+        
+        # Compute metrics with explicit labels to suppress sklearn warning
         metrics = {
             "accuracy": float(accuracy_score(y_true, y_pred)),
-            "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-            "macro_f1": float(f1_score(y_true, y_pred, average='macro', zero_division=0)),
+            "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred, labels=all_labels)),
+            "macro_f1": float(f1_score(y_true, y_pred, average='macro', labels=all_labels, zero_division=0)),
         }
         
         return metrics
