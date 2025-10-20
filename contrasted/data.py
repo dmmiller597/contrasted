@@ -42,8 +42,7 @@ class CathEmbeddingDataset(Dataset):
     @property
     def h5_file(self):
         if self._h5_file is None:
-            # The 'core' driver reads the whole file into RAM once, eliminating disk I/O
-            self._h5_file = h5py.File(self.h5_path, 'r', driver='core')
+            self._h5_file = h5py.File(self.h5_path, 'r')
         return self._h5_file
 
     def __len__(self) -> int:

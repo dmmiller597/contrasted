@@ -16,7 +16,7 @@ The pipeline consists of three main stages:
 
 ```bash
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/dmmiller597/contrasted
 cd contrasted
 
 # Install dependencies
@@ -38,7 +38,6 @@ This will:
 - Load pre-computed ProstT5 embeddings (1024-dim)
 - Train a projection head to 128-dim using supervised contrastive loss
 - Evaluate using k-NN classification
-- Save checkpoints to `outputs/YYYY-MM-DD/HH-MM-SS/checkpoints/`
 
 **Configuration**: Edit `configs/train.yaml` or override via command line:
 
