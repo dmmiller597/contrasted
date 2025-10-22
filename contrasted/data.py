@@ -9,7 +9,7 @@ from contrasted.utils import extract_domain_id, load_h5_keys_from_fasta, load_la
 
 
 class CathEmbeddingDataset(Dataset):
-    """CATH protein embeddings from HDF5."""
+    """CATH protein embeddings from HDF5 with proper multi-worker support."""
 
     def __init__(
         self,
@@ -20,7 +20,6 @@ class CathEmbeddingDataset(Dataset):
     ):
         self.h5_path = h5_path
         self.cache_embeddings = cache_embeddings
-        self._h5_file = None
         self._embedding_cache: Optional[Dict[str, torch.Tensor]] = None
         self.samples = self._filter_samples(h5_keys, labels)
         
@@ -55,19 +54,14 @@ class CathEmbeddingDataset(Dataset):
         
         # Use cached embedding if available
         if self._embedding_cache is not None:
-            embedding = self._embedding_cache[key]
-        else:
-            # Lazy load from disk
-            if self._h5_file is None:
-                self._h5_file = h5py.File(self.h5_path, 'r')
-            embedding = torch.from_numpy(self._h5_file[key][:]).float()
+            return self._embedding_cache[key], label
+        
+        # For non-cached mode, open file fresh each time (worker-safe)
+        # This avoids file descriptor leaks in multi-worker scenarios
+        with h5py.File(self.h5_path, 'r') as f:
+            embedding = torch.from_numpy(f[key][:]).float()
         
         return embedding, label
-
-    def __del__(self):
-        """Ensure HDF5 file is closed."""
-        if self._h5_file is not None:
-            self._h5_file.close()
 
 
 class CathDataModule(L.LightningDataModule):

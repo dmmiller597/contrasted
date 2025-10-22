@@ -97,7 +97,6 @@ logging:
       logging_interval: step
     - _target_: contrasted.callbacks.KNNEvaluationCallback
       eval_every_n_epochs: 1
-      chunk_size: 2048
 
 # Execution controls
 run:
