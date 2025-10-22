@@ -26,13 +26,13 @@ parameters:
   model.loss_params.alpha:
     values: [32, 48, 64]
 
-  # Learning rate - expanded sweep to include more promising values
+  # Learning rate - simplified to 6 values
   model.learning_rate:
-    values: [0.00001, 0.00005, 0.0001, 0.0003, 0.0005, 0.001, 0.003]
+    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.003]
   
   # Batch size - explore effect on training dynamics and memory
   data.batch_size:
-    values: [512, 1024, 2048]
+    values: [1024, 2048]
 
 
 # The command that W&B will use to run your training script.

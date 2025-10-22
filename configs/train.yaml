@@ -40,6 +40,8 @@ model:
   loss_type: supcon
   loss_params:
     temperature: 0.05
+    alpha: 32
+    margin: 0.1
   learning_rate: ${learning.lr}
   weight_decay: ${learning.weight_decay}
   epochs: ${trainer.max_epochs}
