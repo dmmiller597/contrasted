@@ -4,12 +4,18 @@ defaults:
 
 seed: 42
 
+# Data Configuration
 paths:
   train_fasta: data/clustered_datasets/train.fasta
   val_fasta: data/clustered_datasets/val.fasta
   test_fasta: data/clustered_datasets/s30/test.fasta
   embedding_file: data/cath-domain-seqs-S100.h5
   label_file: data/cath-domain-sf-list.txt
+
+data:
+  batch_size: 1024
+  num_workers: 4
+  pin_memory: true
 
 datamodule:
   _target_: contrasted.data.CathDataModule
@@ -22,11 +28,7 @@ datamodule:
   num_workers: ${data.num_workers}
   pin_memory: ${data.pin_memory}
 
-data:
-  batch_size: 1024
-  num_workers: 4
-  pin_memory: true
-
+# Model Configuration
 model:
   _target_: contrasted.model.CathSupConModel
   _recursive_: false
@@ -40,16 +42,20 @@ model:
     temperature: 0.05
   learning_rate: ${learning.lr}
   weight_decay: ${learning.weight_decay}
-  scheduler_params:
-    warmup_ratio: ${learning.warmup_ratio}
-    eta_min: ${learning.eta_min}
+  epochs: ${trainer.max_epochs}
+  num_warmup_epochs: ${learning.num_warmup_epochs}
+  min_lr: ${learning.eta_min}
+  eps: 1e-8
+  betas: [0.9, 0.999]
 
+# Optimization Configuration
 learning:
   lr: 0.0005
   weight_decay: 0.0001
-  warmup_ratio: 0.05
+  num_warmup_epochs: 20
   eta_min: 0.000001
 
+# Training Configuration
 trainer:
   max_epochs: 400
   accelerator: auto
@@ -58,12 +64,12 @@ trainer:
   gradient_clip_val: 1.0
   deterministic: true
   log_every_n_steps: 10
-  accumulate_grad_batches: 1
   val_check_interval: 1.0
   enable_progress_bar: true
   enable_model_summary: true
   default_root_dir: ${hydra:run.dir}
 
+# Logging & Callbacks
 logging:
   logger:
     _target_: lightning.pytorch.loggers.WandbLogger
@@ -77,8 +83,6 @@ logging:
       monitor: val/knn_balanced_accuracy
       mode: max
       save_top_k: 1
-      save_last: false
-      enable_version_counter: false
       filename: "epoch={epoch:02d}-val_knn_bal_acc={val/knn_balanced_accuracy:.4f}"
       dirpath: ${hydra:run.dir}/checkpoints
     - _target_: lightning.pytorch.callbacks.EarlyStopping
@@ -91,11 +95,12 @@ logging:
     - _target_: contrasted.callbacks.KNNEvaluationCallback
       eval_every_n_epochs: 1
 
-# Execution controls
+# Execution
 run:
   do_test_after_fit: true
-  test_ckpt_path: best  # one of: 'best', 'last', null
+  test_ckpt_path: best
 
+# Hydra
 hydra:
   run:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

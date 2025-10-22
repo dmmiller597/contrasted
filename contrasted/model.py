@@ -25,7 +25,7 @@ class ProjectionHead(nn.Module):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
             if i < len(dims) - 2:
                 layers.append(nn.BatchNorm1d(dims[i + 1]))
-                layers.append(nn.ReLU(inplace=True))
+                layers.append(nn.GELU())
                 layers.append(nn.Dropout(dropout))
         
         self.projector = nn.Sequential(*layers)
@@ -50,6 +50,11 @@ class CathSupConModel(L.LightningModule):
         weight_decay: float = 0.0001,
         scheduler_params: Optional[Dict[str, Any]] = None,
         num_classes: Optional[int] = None,
+        epochs: int = 400,
+        num_warmup_epochs: int = 20,
+        min_lr: float = 1e-6,
+        eps: float = 1e-8,
+        betas: tuple = (0.9, 0.999),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -124,38 +129,28 @@ class CathSupConModel(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
             self.parameters(),
-            lr=self.hparams.learning_rate,
-            weight_decay=self.hparams.weight_decay,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+            eps=self.eps,
+            betas=self.betas,
         )
-        
-        # Calculate total steps and warmup steps
-        total_steps = int(self.trainer.estimated_stepping_batches)
-        scheduler_params = self.hparams.scheduler_params or {}
-        warmup_ratio = float(scheduler_params.get("warmup_ratio", 0.05))
-        warmup_steps = max(1, int(total_steps * warmup_ratio))
-        eta_min = float(scheduler_params.get("eta_min", 1e-6))
-        
-        # Build schedulers: LinearLR warmup -> CosineAnnealingLR decay
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=1e-8,
-            end_factor=1.0,
-            total_iters=warmup_steps,
+        # learning rate warmup
+        linear_lr = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.5, total_iters=self.num_warmup_epochs
         )
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=total_steps - warmup_steps,
-            eta_min=eta_min,
+            optimizer=optimizer,
+            T_max=self.epochs - self.num_warmup_epochs,
+            eta_min=self.min_lr,
         )
         scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup, cosine],
-            milestones=[warmup_steps],
+            optimizer=optimizer,
+            schedulers=[linear_lr, cosine],
+            milestones=[self.num_warmup_epochs],
         )
-        
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+            "lr_scheduler": scheduler,
+            "interval": "epoch",
+            "frequency": 50,
         }
-    
-    # Learning rate is logged via LearningRateMonitor callback configured in Hydra.
