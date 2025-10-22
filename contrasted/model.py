@@ -152,5 +152,5 @@ class CathSupConModel(L.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": scheduler,
             "interval": "epoch",
-            "frequency": 50,
+            "frequency": 1,
         }
