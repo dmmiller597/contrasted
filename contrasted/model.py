@@ -48,9 +48,7 @@ class CathSupConModel(L.LightningModule):
         loss_params: Optional[Dict[str, Any]] = None,
         learning_rate: float = 0.001,
         weight_decay: float = 0.0001,
-        scheduler_type: str = "onecycle",
         scheduler_params: Optional[Dict[str, Any]] = None,
-        warmup_epochs: int = 0,
         num_classes: Optional[int] = None,
     ):
         super().__init__()
@@ -130,53 +128,34 @@ class CathSupConModel(L.LightningModule):
             weight_decay=self.hparams.weight_decay,
         )
         
-        scheduler_type = self.hparams.scheduler_type.lower()
-        if scheduler_type == "none":
-            return optimizer
-        
+        # Calculate total steps and warmup steps
+        total_steps = int(self.trainer.estimated_stepping_batches)
         scheduler_params = self.hparams.scheduler_params or {}
+        warmup_ratio = float(scheduler_params.get("warmup_ratio", 0.05))
+        warmup_steps = max(1, int(total_steps * warmup_ratio))
+        eta_min = float(scheduler_params.get("eta_min", 1e-6))
         
-        if scheduler_type == "onecycle":
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=scheduler_params.get("max_lr", self.hparams.learning_rate * 10),
-                total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=scheduler_params.get("pct_start", 0.3),
-                anneal_strategy=scheduler_params.get("anneal_strategy", "cos"),
-                div_factor=scheduler_params.get("div_factor", 25.0),
-                final_div_factor=scheduler_params.get("final_div_factor", 10000.0),
-            )
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
-            }
+        # Build schedulers: LinearLR warmup -> CosineAnnealingLR decay
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1e-8,
+            end_factor=1.0,
+            total_iters=warmup_steps,
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_steps - warmup_steps,
+            eta_min=eta_min,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_steps],
+        )
         
-        elif scheduler_type == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=scheduler_params.get("T_max", self.trainer.max_epochs),
-                eta_min=scheduler_params.get("eta_min", 0.0),
-            )
-            
-            # Add linear warmup if requested
-            if self.hparams.warmup_epochs > 0:
-                def warmup_lambda(epoch):
-                    if epoch < self.hparams.warmup_epochs:
-                        return float(epoch) / float(self.hparams.warmup_epochs)
-                    return 1.0
-                
-                warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lambda)
-                scheduler = torch.optim.lr_scheduler.SequentialLR(
-                    optimizer,
-                    schedulers=[warmup_scheduler, scheduler],
-                    milestones=[self.hparams.warmup_epochs]
-                )
-            
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "frequency": 1},
-            }
-        
-        return optimizer
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
     
     # Learning rate is logged via LearningRateMonitor callback configured in Hydra.

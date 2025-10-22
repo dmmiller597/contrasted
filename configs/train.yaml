@@ -38,24 +38,17 @@ model:
   loss_type: supcon
   loss_params:
     temperature: 0.05
-  learning_rate: ${optimizer.learning_rate}
-  weight_decay: ${optimizer.weight_decay}
-  scheduler_type: ${scheduler.type}
-  scheduler_params: ${scheduler.params}
-  warmup_epochs: 10
+  learning_rate: ${learning.lr}
+  weight_decay: ${learning.weight_decay}
+  scheduler_params:
+    warmup_ratio: ${learning.warmup_ratio}
+    eta_min: ${learning.eta_min}
 
-optimizer:
-  learning_rate: 0.0001
+learning:
+  lr: 0.0005
   weight_decay: 0.0001
-
-scheduler:
-  type: onecycle
-  params:
-    max_lr: 0.001
-    pct_start: 0.3
-    anneal_strategy: cos
-    div_factor: 25.0
-    final_div_factor: 10000.0
+  warmup_ratio: 0.05
+  eta_min: 0.000001
 
 trainer:
   max_epochs: 400
