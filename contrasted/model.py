@@ -129,24 +129,24 @@ class CathSupConModel(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
             self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-            eps=self.eps,
-            betas=self.betas,
+            lr=self.hparams.learning_rate,
+            weight_decay=self.hparams.weight_decay,
+            eps=self.hparams.eps,
+            betas=self.hparams.betas,
         )
         # learning rate warmup
         linear_lr = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.5, total_iters=self.num_warmup_epochs
+            optimizer, start_factor=0.5, total_iters=self.hparams.num_warmup_epochs
         )
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer=optimizer,
-            T_max=self.epochs - self.num_warmup_epochs,
-            eta_min=self.min_lr,
+            T_max=self.hparams.epochs - self.hparams.num_warmup_epochs,
+            eta_min=self.hparams.min_lr,
         )
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer=optimizer,
             schedulers=[linear_lr, cosine],
-            milestones=[self.num_warmup_epochs],
+            milestones=[self.hparams.num_warmup_epochs],
         )
         return {
             "optimizer": optimizer,
