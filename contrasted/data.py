@@ -1,9 +1,8 @@
 import h5py
 import lightning as L
 import torch
-from collections import Counter
 from pathlib import Path
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset
 from typing import Dict, List, Optional, Tuple
 
 from contrasted.utils import extract_domain_id, load_h5_keys_from_fasta, load_labels
@@ -84,7 +83,6 @@ class CathDataModule(L.LightningDataModule):
         batch_size: int = 64,
         num_workers: int = 4,
         pin_memory: bool = True,
-        use_weighted_sampling: bool = False,
         cache_embeddings: bool = True,
     ):
         super().__init__()
@@ -124,19 +122,11 @@ class CathDataModule(L.LightningDataModule):
             cache_embeddings=self.cache_embeddings
         )
 
-    def _get_weighted_sampler(self) -> WeightedRandomSampler:
-        labels = [label for _, label in self.train_dataset.samples]
-        class_counts = Counter(labels)
-        weights = [1.0 / class_counts[label] for label in labels]
-        return WeightedRandomSampler(weights, len(weights), replacement=True)
-
     def train_dataloader(self) -> DataLoader:
-        sampler = self._get_weighted_sampler() if self.hparams.use_weighted_sampling else None
         return DataLoader(
             self.train_dataset,
             batch_size=self.hparams.batch_size,
-            sampler=sampler,
-            shuffle=sampler is None,
+            shuffle=True,
             num_workers=self.hparams.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.hparams.num_workers > 0,
