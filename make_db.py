@@ -3,9 +3,7 @@
 import hydra
 from omegaconf import DictConfig
 import torch
-import torch.nn.functional as F
 import h5py
-import faiss
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -13,6 +11,7 @@ import logging
 
 from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id
 from contrasted.model import CathSupConModel
+from contrasted.faiss_utils import build_faiss_index
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +34,15 @@ def embed_sequences(
         batch_size: Batch size for processing
         
     Returns:
-        embeddings: (N, D) normalized projected embeddings
+        embeddings: (N, D) normalized projected embeddings (float32)
         domain_ids: List of domain IDs
     """
     model.eval()
-    
     all_embeddings = []
     domain_ids = []
     
     for i in tqdm(range(0, len(h5_keys), batch_size), desc="Projecting embeddings"):
-        batch_keys = h5_keys[i:i + batch_size]
+        batch_keys = h5_keys[i : i + batch_size]
         batch_embs = []
         
         for h5_key in batch_keys:
@@ -58,14 +56,12 @@ def embed_sequences(
         
         if not batch_embs:
             continue
-            
-        # Stack and project
+        
         batch_tensor = torch.stack(batch_embs).to(device)
         projected = model(batch_tensor)
-        
         all_embeddings.append(projected.cpu().numpy())
     
-    embeddings_matrix = np.vstack(all_embeddings)
+    embeddings_matrix = np.vstack(all_embeddings).astype(np.float32)
     return embeddings_matrix, domain_ids
 
 
@@ -88,8 +84,6 @@ def main(cfg: DictConfig):
     
     # Load model
     logger.info(f"Loading model from: {model_path}")
-    # Load with strict=False to ignore loss-specific parameters (like proxies)
-    # We only need the projection head for inference
     model = CathSupConModel.load_from_checkpoint(str(model_path), strict=False)
     model.eval()
     model.to(device)
@@ -107,31 +101,37 @@ def main(cfg: DictConfig):
         logger.info(f"Processing {len(h5_keys)} sequences")
     
     # Load embeddings and project through model
-    embedding_file = Path(cfg.get('embedding_file', 'data/cath-domain-seqs-S100.h5'))
+    embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
     logger.info(f"Loading embeddings from: {embedding_file}")
     
-    with h5py.File(embedding_file, 'r') as h5f:
+    with h5py.File(embedding_file, "r") as h5f:
         embeddings_matrix, domain_ids = embed_sequences(
             model, h5f, h5_keys, device, batch_size=256
         )
     
-    logger.info(f"Generated {embeddings_matrix.shape[0]} embeddings of dimension {embeddings_matrix.shape[1]}")
+    # Validate embeddings
+    if embeddings_matrix.size == 0:
+        raise ValueError("No valid embeddings generated")
     
-    # Build FAISS index (using inner product for normalized vectors = cosine similarity)
+    logger.info(
+        f"Generated {embeddings_matrix.shape[0]} embeddings "
+        f"of dimension {embeddings_matrix.shape[1]}"
+    )
+    
+    # Build FAISS index
     logger.info("Building FAISS index...")
-    index = faiss.IndexFlatIP(embeddings_matrix.shape[1])
-    index.add(embeddings_matrix.astype(np.float32))
-    logger.info(f"Index built with {index.ntotal} vectors")
+    index = build_faiss_index(embeddings_matrix)
     
     # Save index
     index_path = Path(cfg.index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
+    import faiss
     faiss.write_index(index, str(index_path))
     logger.info(f"Saved FAISS index to: {index_path}")
     
     # Save domain IDs
-    ids_path = index_path.with_suffix('.npy')
-    np.save(ids_path, domain_ids)
+    ids_path = index_path.with_suffix(".npy")
+    np.save(ids_path, np.array(domain_ids))
     logger.info(f"Saved domain IDs to: {ids_path}")
     
     logger.info("✓ Database creation complete!")

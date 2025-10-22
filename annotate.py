@@ -3,9 +3,7 @@
 import hydra
 from omegaconf import DictConfig
 import torch
-import torch.nn.functional as F
 import h5py
-import faiss
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -17,6 +15,8 @@ import warnings
 
 from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id
 from contrasted.model import CathSupConModel
+from contrasted.faiss_utils import search_faiss_index
+import faiss
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +37,16 @@ def compute_consensus(
         predicted_annotation: Consensus annotation (or 'unknown')
         confidence: Confidence score [0, 1]
     """
-    # Filter by distance cutoff
     valid_mask = distances <= distance_cutoff
-    valid_annotations = [ann for ann, valid in zip(neighbor_annotations, valid_mask) if valid]
+    valid_annotations = [
+        ann for ann, valid in zip(neighbor_annotations, valid_mask) if valid
+    ]
     
     if not valid_annotations:
-        return 'unknown', 0.0
+        return "unknown", 0.0
     
-    # Majority vote
     counts = Counter(valid_annotations)
     predicted_annotation, count = counts.most_common(1)[0]
-    
-    # Confidence = fraction of valid neighbors agreeing
     confidence = count / len(valid_annotations)
     
     return predicted_annotation, confidence
@@ -96,7 +94,7 @@ def annotate_sequences(
     results = []
     
     for i in tqdm(range(0, len(h5_keys), batch_size), desc="Annotating sequences"):
-        batch_keys = h5_keys[i:i + batch_size]
+        batch_keys = h5_keys[i : i + batch_size]
         batch_embs = []
         batch_query_ids = []
         
@@ -104,70 +102,57 @@ def annotate_sequences(
             try:
                 embedding = torch.from_numpy(h5_file[h5_key][:]).float()
                 batch_embs.append(embedding)
-                query_id = extract_domain_id(h5_key)
-                batch_query_ids.append(query_id)
+                batch_query_ids.append(extract_domain_id(h5_key))
             except KeyError:
                 logger.warning(f"Missing embedding for key: {h5_key}")
                 query_id = extract_domain_id(h5_key)
-                # Add placeholder result
-                result = {
-                    'query_id': query_id,
-                    'predicted_annotation': 'missing_embedding',
-                    'distance': np.nan,
-                    'confidence': 0.0,
-                }
+                result = {"query_id": query_id, "predicted_annotation": "missing_embedding"}
                 if return_true_annotation:
                     true_idx = id_to_annotation.get(query_id, -1)
-                    result['true_annotation'] = idx_to_annotation.get(true_idx, 'unknown')
+                    result["true_annotation"] = idx_to_annotation.get(true_idx, "unknown")
                 results.append(result)
                 continue
         
         if not batch_embs:
             continue
         
-        # Stack and project
+        # Project embeddings
         batch_tensor = torch.stack(batch_embs).to(device)
         projected = model(batch_tensor)
-        
         query_vectors = projected.cpu().numpy().astype(np.float32)
         
-        # Search index (returns similarity scores for IndexFlatIP)
-        similarities, indices = index.search(query_vectors, k)
+        # Search index
+        similarities, indices = search_faiss_index(index, query_vectors, k)
+        distances = 1.0 - similarities  # Convert similarity to distance
         
-        # Convert similarity to distance (1 - similarity for cosine)
-        distances = 1.0 - similarities
-        
-        # Process each query in batch
-        for query_id, query_distances, query_indices in zip(batch_query_ids, distances, indices):
-            # Get neighbor domain IDs and annotations
+        # Process results
+        for query_id, query_distances, query_indices in zip(
+            batch_query_ids, distances, indices
+        ):
             neighbor_domain_ids = ref_domain_ids[query_indices]
-            neighbor_annotation_indices = [
-                id_to_annotation.get(nid, -1) for nid in neighbor_domain_ids
-            ]
             neighbor_annotations = [
-                idx_to_annotation.get(idx, 'unknown') for idx in neighbor_annotation_indices
+                idx_to_annotation.get(id_to_annotation.get(nid, -1), "unknown")
+                for nid in neighbor_domain_ids
             ]
             
-            # Compute consensus
             predicted_annotation, confidence = compute_consensus(
                 neighbor_annotations, query_distances, distance_cutoff
             )
             
-            # Build result
             result = {
-                'query_id': query_id,
-                'predicted_annotation': predicted_annotation,
+                "query_id": query_id,
+                "predicted_annotation": predicted_annotation,
             }
             
             if return_true_annotation:
                 true_idx = id_to_annotation.get(query_id, -1)
-                result['true_annotation'] = idx_to_annotation.get(true_idx, 'unknown')
+                result["true_annotation"] = idx_to_annotation.get(true_idx, "unknown")
             
             if return_distance:
-                result['distance'] = float(query_distances[0])
-                
+                result["distance"] = float(query_distances[0])
+            
             if return_confidence:
-                result['confidence'] = float(confidence)
+                result["confidence"] = float(confidence)
             
             results.append(result)
     
@@ -182,19 +167,18 @@ def main(cfg: DictConfig):
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
     index_path = Path(cfg.index)
-    ids_path = index_path.with_suffix('.npy')
+    ids_path = index_path.with_suffix(".npy")
     annotation_path = Path(cfg.id_to_annotation)
     
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input FASTA not found: {input_path}")
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
-    if not index_path.exists():
-        raise FileNotFoundError(f"FAISS index not found: {index_path}")
-    if not ids_path.exists():
-        raise FileNotFoundError(f"Domain IDs file not found: {ids_path}")
-    if not annotation_path.exists():
-        raise FileNotFoundError(f"Annotation file not found: {annotation_path}")
+    for path, name in [
+        (input_path, "Input FASTA"),
+        (model_path, "Model checkpoint"),
+        (index_path, "FAISS index"),
+        (ids_path, "Domain IDs file"),
+        (annotation_path, "Annotation file"),
+    ]:
+        if not path.exists():
+            raise FileNotFoundError(f"{name} not found: {path}")
     
     # Setup device
     device = torch.device(cfg.device)
@@ -202,8 +186,6 @@ def main(cfg: DictConfig):
     
     # Load model
     logger.info(f"Loading model from: {model_path}")
-    # Load with strict=False to ignore loss-specific parameters (like proxies)
-    # We only need the projection head for inference
     model = CathSupConModel.load_from_checkpoint(str(model_path), strict=False)
     model.eval()
     model.to(device)
@@ -225,11 +207,11 @@ def main(cfg: DictConfig):
     logger.info(f"Processing {len(h5_keys)} query sequences")
     
     # Annotate sequences
-    embedding_file = Path(cfg.get('embedding_file', 'data/cath-domain-seqs-S100.h5'))
+    embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
     logger.info(f"Loading embeddings from: {embedding_file}")
     
     start_time = time.time()
-    with h5py.File(embedding_file, 'r') as h5f:
+    with h5py.File(embedding_file, "r") as h5f:
         results = annotate_sequences(
             model=model,
             h5_file=h5f,
@@ -243,24 +225,22 @@ def main(cfg: DictConfig):
             distance_cutoff=cfg.distance_cutoff,
             return_distance=cfg.return_distance,
             return_confidence=cfg.return_confidence,
-            return_true_annotation=cfg.get('return_true_annotation', True),
+            return_true_annotation=cfg.get("return_true_annotation", True),
             batch_size=256,
         )
-    end_time = time.time()
-    annotation_time = end_time - start_time
+    annotation_time = time.time() - start_time
     
     # Save results
     output_path = Path(cfg.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
     df = pd.DataFrame(results)
-    df.to_csv(output_path, sep='\t', index=False)
+    df.to_csv(output_path, sep="\t", index=False)
     logger.info(f"Saved annotations to: {output_path}")
     
     # Print summary statistics
     total = len(results)
-    unknown = (df['predicted_annotation'] == 'unknown').sum()
-    missing = (df['predicted_annotation'] == 'missing_embedding').sum()
+    unknown = (df["predicted_annotation"] == "unknown").sum()
+    missing = (df["predicted_annotation"] == "missing_embedding").sum()
     annotated = total - unknown - missing
     
     logger.info(f"\n{'='*50}")
@@ -269,33 +249,39 @@ def main(cfg: DictConfig):
     logger.info(f"  Successfully annotated: {annotated} ({100*annotated/total:.1f}%)")
     logger.info(f"  Unknown (no neighbors within cutoff): {unknown} ({100*unknown/total:.1f}%)")
     logger.info(f"  Missing embeddings: {missing} ({100*missing/total:.1f}%)")
-    logger.info(f"  Annotation time: {annotation_time:.2f}s ({annotation_time/total*1000:.2f}ms per query)")
+    logger.info(
+        f"  Annotation time: {annotation_time:.2f}s "
+        f"({annotation_time/total*1000:.2f}ms per query)"
+    )
     
     if cfg.return_confidence and annotated > 0:
-        valid_conf = df[df['predicted_annotation'].isin(['unknown', 'missing_embedding']) == False]['confidence']
+        valid_conf = df[
+            ~df["predicted_annotation"].isin(["unknown", "missing_embedding"])
+        ]["confidence"]
         logger.info(f"  Mean confidence: {valid_conf.mean():.3f}")
         logger.info(f"  Median confidence: {valid_conf.median():.3f}")
     
     # Compute metrics if true annotations are available
-    if cfg.get('return_true_annotation', True) and 'true_annotation' in df.columns:
-        from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, classification_report
+    if cfg.get("return_true_annotation", True) and "true_annotation" in df.columns:
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
         
-        # Filter to only valid predictions (exclude unknown/missing)
-        valid_mask = ~df['predicted_annotation'].isin(['unknown', 'missing_embedding'])
+        valid_mask = ~df["predicted_annotation"].isin(["unknown", "missing_embedding"])
         valid_df = df[valid_mask]
         
         if len(valid_df) > 0:
-            y_true = valid_df['true_annotation'].values
-            y_pred = valid_df['predicted_annotation'].values
-            
-            # Get all unique classes from both y_true and y_pred to avoid sklearn warning
+            y_true = valid_df["true_annotation"].values
+            y_pred = valid_df["predicted_annotation"].values
             all_classes = sorted(set(y_true) | set(y_pred))
             
             with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', message='y_pred contains classes not in y_true')
+                warnings.filterwarnings(
+                    "ignore", message="y_pred contains classes not in y_true"
+                )
                 accuracy = accuracy_score(y_true, y_pred)
                 balanced_acc = balanced_accuracy_score(y_true, y_pred)
-                macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0, labels=all_classes)
+                macro_f1 = f1_score(
+                    y_true, y_pred, average="macro", zero_division=0, labels=all_classes
+                )
             
             logger.info(f"\n{'='*50}")
             logger.info(f"Performance Metrics (on {len(valid_df)} valid predictions):")
@@ -303,15 +289,16 @@ def main(cfg: DictConfig):
             logger.info(f"  Balanced Accuracy: {balanced_acc:.4f}")
             logger.info(f"  Macro F1: {macro_f1:.4f}")
             
-            # Add correct/incorrect column to dataframe
-            df['correct'] = df['predicted_annotation'] == df['true_annotation']
+            df["correct"] = df["predicted_annotation"] == df["true_annotation"]
+            correct_count = valid_df[
+                valid_df["predicted_annotation"] == valid_df["true_annotation"]
+            ].shape[0]
+            logger.info(
+                f"  Correct predictions: {correct_count}/{len(valid_df)} "
+                f"({100*correct_count/len(valid_df):.1f}%)"
+            )
             
-            # Count correct predictions
-            correct_count = valid_df[valid_df['predicted_annotation'] == valid_df['true_annotation']].shape[0]
-            logger.info(f"  Correct predictions: {correct_count}/{len(valid_df)} ({100*correct_count/len(valid_df):.1f}%)")
-            
-            # Re-save with correct column
-            df.to_csv(output_path, sep='\t', index=False)
+            df.to_csv(output_path, sep="\t", index=False)
     
     logger.info(f"{'='*50}\n")
     logger.info("✓ Annotation complete!")
