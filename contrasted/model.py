@@ -148,7 +148,7 @@ class CathSupConModel(L.LightningModule):
             )
             return {
                 "optimizer": optimizer,
-                "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+                "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
             }
         
         elif scheduler_type == "cosine":
@@ -174,7 +174,7 @@ class CathSupConModel(L.LightningModule):
             
             return {
                 "optimizer": optimizer,
-                "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
+                "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "frequency": 1},
             }
         
         return optimizer
