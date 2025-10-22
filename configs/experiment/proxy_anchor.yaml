@@ -1,15 +1,12 @@
 # @package _global_
 
 # ProxyAnchor-specific overrides
-optimizer:
-  learning_rate: 0.0005
-  weight_decay: 0.00001
-
-scheduler:
-  type: cosine
 
 model:
   loss_type: proxy_anchor
   loss_params:
     margin: 0.3
     alpha: 48
+
+learning:
+  lr: 0.001
