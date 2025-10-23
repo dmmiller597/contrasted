@@ -28,3 +28,6 @@ dev = [
     "isort>=5.0.0",
 ]
 
+[tool.setuptools]
+packages = ["contrasted"]
+
