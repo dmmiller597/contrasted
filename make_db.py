@@ -22,7 +22,7 @@ def embed_sequences(
     h5_file: h5py.File,
     h5_keys: list[str],
     device: torch.device,
-    batch_size: int = 256,
+    batch_size: int = 2048,
 ) -> tuple[np.ndarray, list[str]]:
     """Project embeddings through trained model.
     

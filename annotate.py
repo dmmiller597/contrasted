@@ -67,7 +67,7 @@ def annotate_sequences(
     return_distance: bool,
     return_confidence: bool,
     return_true_annotation: bool,
-    batch_size: int = 256,
+    batch_size: int = 2048,
 ) -> list[dict]:
     """Annotate query sequences using k-NN search.
     
@@ -231,7 +231,7 @@ def main(cfg: DictConfig):
             return_distance=cfg.return_distance,
             return_confidence=cfg.return_confidence,
             return_true_annotation=cfg.get("return_true_annotation", True),
-            batch_size=256,
+            batch_size=2048,
         )
     annotation_time = time.time() - start_time
     
