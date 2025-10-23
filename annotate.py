@@ -163,6 +163,15 @@ def annotate_sequences(
 def main(cfg: DictConfig):
     """Annotate protein sequences using k-NN search."""
     
+    # Setup device with auto-detection
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    logger.info(f"Using device: {device}")
+    
     # Validate inputs
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
@@ -179,10 +188,6 @@ def main(cfg: DictConfig):
     ]:
         if not path.exists():
             raise FileNotFoundError(f"{name} not found: {path}")
-    
-    # Setup device
-    device = torch.device(cfg.device)
-    logger.info(f"Using device: {device}")
     
     # Load model
     logger.info(f"Loading model from: {model_path}")

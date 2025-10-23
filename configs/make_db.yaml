@@ -3,4 +3,3 @@ model_path: /SAN/orengolab/functional-families/contrasted/outputs/2025-10-23/17-
 index_path: data/vector_db/train.index  # the path we want to save our vector index to
 embedding_file: data/cath-domain-seqs-S100.h5  # HDF5 file with pre-computed embeddings
 ids: null # if we only want to build our index from a subset of input [OPTIONAL]
-device: 'cpu'

@@ -69,6 +69,15 @@ def embed_sequences(
 def main(cfg: DictConfig):
     """Create FAISS index from trained model embeddings."""
     
+    # Setup device with auto-detection
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    logger.info(f"Using device: {device}")
+    
     # Validate inputs
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
@@ -77,10 +86,6 @@ def main(cfg: DictConfig):
         raise FileNotFoundError(f"Input FASTA not found: {input_path}")
     if not model_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
-    
-    # Setup device
-    device = torch.device(cfg.device)
-    logger.info(f"Using device: {device}")
     
     # Load model
     logger.info(f"Loading model from: {model_path}")

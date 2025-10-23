@@ -7,7 +7,6 @@ ids: null  # the ids pertaining to the entries of our vector index (loaded autom
 index: data/vector_db/train.index  # faiss vector index file
 output_path: outputs/annotations/test_annotations.tsv  # where we want to save our annotations to
 distance_cutoff: 0.1  # maximum cosine distance (1 - similarity) to consider valid
-device: 'cpu'
 return_distance: true
 return_confidence: true
 return_true_annotation: true  # include true annotations and compute metrics
