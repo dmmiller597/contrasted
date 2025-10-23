@@ -66,6 +66,70 @@ def get_cath_label(header: str) -> str:
     
     return sf_label
 
+def get_cath_class(label: str) -> str:
+    """Extracts the CATH class (first digit) from a superfamily label.
+    Example: '1.10.10.10' -> '1'
+    """
+    try:
+        return label.split('.')[0]
+    except (IndexError, AttributeError):
+        return ""
+
+def create_initial_holdouts(
+    sequences: dict[str, str],
+    num_per_class: int = 2,
+    min_seq_length: int = 2,
+    max_seq_length: int = 10,
+    random_state: int = 42
+) -> dict[str, str]:
+    """
+    Creates a holdouts set by selecting num_per_class superfamilies from each of
+    Classes 1, 2, and 3, where each superfamily has between min_seq_length and
+    max_seq_length sequences.
+    
+    Returns:
+        Dictionary of holdout sequences
+    """
+    import random
+    random.seed(random_state)
+    
+    # Group sequences by superfamily and class
+    sf_to_sequences = defaultdict(list)
+    for header, seq in sequences.items():
+        label = get_cath_label(header)
+        if label:
+            sf_to_sequences[label].append((header, seq))
+    
+    # Group superfamilies by class
+    class_to_sfs = defaultdict(list)
+    for sf_label, seq_list in sf_to_sequences.items():
+        seq_count = len(seq_list)
+        if min_seq_length <= seq_count <= max_seq_length:
+            cath_class = get_cath_class(sf_label)
+            if cath_class in ['1', '2', '3']:
+                class_to_sfs[cath_class].append(sf_label)
+    
+    # Select num_per_class superfamilies from each class
+    selected_sfs = set()
+    for cath_class in ['1', '2', '3']:
+        available_sfs = class_to_sfs[cath_class]
+        if len(available_sfs) >= num_per_class:
+            selected = random.sample(available_sfs, num_per_class)
+            selected_sfs.update(selected)
+            logging.info(f"Selected {num_per_class} superfamilies from Class {cath_class}: {selected}")
+        else:
+            logging.warning(f"Class {cath_class} has only {len(available_sfs)} superfamilies with 2-10 sequences (need {num_per_class})")
+    
+    # Create holdouts from selected superfamilies
+    holdout_sequences = {}
+    for header, seq in sequences.items():
+        label = get_cath_label(header)
+        if label and label in selected_sfs:
+            holdout_sequences[header] = seq
+    
+    logging.info(f"Created holdouts set with {len(holdout_sequences)} sequences from {len(selected_sfs)} superfamilies.")
+    return holdout_sequences
+
 def run_mmseqs2(
     input_file: Path, 
     output_dir: Path, 
@@ -128,7 +192,8 @@ def parse_clusters(cluster_file: Path) -> dict[str, list[str]]:
 def generate_summary(
     final_training_set: dict[str, str],
     final_validation_set: dict[str, str],
-    final_test_sets: dict[int, dict[str, str]]
+    final_test_sets: dict[int, dict[str, str]],
+    final_holdouts: dict[str, str]
 ) -> str:
     """Generates a formatted text summary of the created datasets."""
     
@@ -150,6 +215,9 @@ def generate_summary(
     lines.append("="*90)
     lines.append(f"Final Training Set:     {len(final_training_set):>7} sequences, {len(final_master_train_labels):>5} SFs")
     lines.append(f"Final Validation Set:   {len(final_validation_set):>7} sequences, {len(final_master_val_labels):>5} SFs")
+    if final_holdouts:
+        final_holdout_labels = {get_cath_label(h) for h in final_holdouts.keys()}
+        lines.append(f"Final Holdouts Set:     {len(final_holdouts):>7} sequences, {len(final_holdout_labels):>5} SFs")
     lines.append("-" * 90)
 
     if summary_data:
@@ -166,6 +234,27 @@ def generate_summary(
     lines.append("="*90)
     
     return "\n".join(lines)
+
+def cleanup_temp_files(output_base_dir: Path):
+    """Removes all temporary files and mmseqs2 clustering directories from the output directory."""
+    import shutil
+    
+    # Remove temp_pool_*.fasta files
+    for temp_file in output_base_dir.glob("temp_pool_*.fasta"):
+        try:
+            temp_file.unlink()
+        except Exception:
+            pass
+    
+    # Remove clustering directories (s10/, s20/, s30/, ... and validation_clustering_s*/)
+    for clustering_dir in output_base_dir.iterdir():
+        if clustering_dir.is_dir():
+            if (clustering_dir.name.startswith('s') and clustering_dir.name[1:].isdigit()) or \
+               'validation_clustering' in clustering_dir.name:
+                try:
+                    shutil.rmtree(clustering_dir)
+                except Exception:
+                    pass
 
 def main(args):
     input_fasta = Path(args.input_fasta)
@@ -205,8 +294,16 @@ def main(args):
     # 3. After validation and test sets are carved out, the remaining pool becomes training.
     # 4. Perform a final label consistency check across all sets.
 
-    pool_for_clustering = all_sequences.copy()
-    logging.info(f"Initial pool for clustering: {len(pool_for_clustering)} sequences.")
+    # --- Step 0: Create Initial Holdouts Set ---
+    logging.info("\n--- Step 0: Creating Initial Holdouts Set ---")
+    initial_holdouts_sequences = create_initial_holdouts(
+        all_sequences,
+        num_per_class=args.num_holdouts_per_class,
+        min_seq_length=args.min_seq_length_for_holdouts,
+        max_seq_length=args.max_seq_length_for_holdouts,
+        random_state=args.random_state
+    )
+    logging.info(f"Created initial holdouts set with {len(initial_holdouts_sequences)} sequences.")
 
     # --- Step 1: Create Validation Set from Validation Identity Clustering ---
     logging.info(f"\n--- Step 1: Creating Validation Set at {args.val_identity_threshold}% Identity ---")
@@ -215,7 +312,7 @@ def main(args):
     if args.val_ratio > 0 and args.val_identity_threshold > 0:
         # Create temporary fasta for validation clustering
         val_pool_fasta = output_base_dir / f"temp_pool_val_{args.val_identity_threshold}.fasta"
-        write_fasta(val_pool_fasta, pool_for_clustering)
+        write_fasta(val_pool_fasta, all_sequences) # Use all_sequences for validation clustering
         
         val_identity = args.val_identity_threshold / 100.0
         val_cluster_dir = output_base_dir / f"validation_clustering_s{args.val_identity_threshold}"
@@ -274,22 +371,23 @@ def main(args):
                 val_members_to_remove.update(val_clusters.get(rep, []))
                 val_members_to_remove.add(rep)
             
-            pool_for_clustering = {
-                h: s for h, s in pool_for_clustering.items() if h not in val_members_to_remove
+            all_sequences = {
+                h: s for h, s in all_sequences.items() if h not in val_members_to_remove
             }
             
             logging.info(f"Sampled {len(val_selected_reps)} clusters for validation set ({args.val_ratio:.1%} of splittable clusters).")
             logging.info(f"Validation set contains {len(final_validation_set)} representatives.")
             logging.info(f"Removed {len(val_members_to_remove)} members of validation clusters from pool.")
-            logging.info(f"Remaining pool for test/train: {len(pool_for_clustering)} sequences.")
+            logging.info(f"Remaining pool for test/train: {len(all_sequences)} sequences.")
             
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logging.error(f"Failed to create validation set. Falling back to old method. Error: {e}")
             final_validation_set = {}
         
-        # Clean up temp file
-        if val_pool_fasta.exists():
-            val_pool_fasta.unlink()
+        finally:
+            # Always clean up temp file
+            if val_pool_fasta.exists():
+                val_pool_fasta.unlink()
     else:
         logging.info("Validation ratio is 0 or validation identity threshold is 0. Skipping validation clustering.")
 
@@ -304,13 +402,13 @@ def main(args):
     for identity_percent in identities:
         logging.info(f"\n--- Processing {identity_percent}% Identity Test Set ---")
         
-        if not pool_for_clustering:
+        if not all_sequences:
             logging.warning(f"Clustering pool is empty. Stopping at {identity_percent}%.")
             break
 
         # Create a temporary fasta file for the current (shrinking) pool
         pool_fasta_path = output_base_dir / f"temp_pool_{identity_percent}.fasta"
-        write_fasta(pool_fasta_path, pool_for_clustering)
+        write_fasta(pool_fasta_path, all_sequences) # Use all_sequences for test clustering
 
         identity_threshold = identity_percent / 100.0
         identity_dir = output_base_dir / f"s{identity_percent}"
@@ -326,79 +424,79 @@ def main(args):
                 args.coverage,
                 sensitivity=sensitivity_to_use
             )
+            
+            clusters_from_current_pool = parse_clusters(cluster_file)
+            
+            # --- Sample a fixed number of representatives for the test set using stratified random sampling ---
+            all_reps_in_clustering = list(clusters_from_current_pool.keys())
+            
+            # Ensure we have labels for stratification and filter out reps from rare classes
+            rep_to_label = {rep: get_cath_label(rep) for rep in all_reps_in_clustering if get_cath_label(rep)}
+            label_counts = Counter(rep_to_label.values())
+            splittable_reps = [
+                rep for rep in all_reps_in_clustering 
+                if rep in rep_to_label and label_counts[rep_to_label[rep]] >= args.min_label_count_for_split
+            ]
+
+            new_test_reps = set()
+
+            if splittable_reps and args.test_set_ratio > 0:
+                splittable_labels = [rep_to_label[rep] for rep in splittable_reps]
+                # Use train_test_split to get a stratified random sample based on the ratio
+                try:
+                    _, selected_reps = train_test_split(
+                        splittable_reps,
+                        test_size=args.test_set_ratio,
+                        stratify=splittable_labels,
+                        random_state=args.random_state
+                    )
+                    new_test_reps = set(selected_reps)
+                except ValueError:
+                    logging.warning(f"Stratified sampling failed for S{identity_percent}. Falling back to random sampling.")
+                    # Fallback to non-stratified sampling if stratification is not possible
+                    _, selected_reps = train_test_split(
+                        splittable_reps,
+                        test_size=args.test_set_ratio,
+                        random_state=args.random_state
+                    )
+                    new_test_reps = set(selected_reps)
+
+            logging.info(f"Sampled {len(new_test_reps)} representatives for the S{identity_percent} test set ({args.test_set_ratio:.1%} of splittable clusters).")
+            
+            # The test set for this identity level consists ONLY of these new representatives.
+            final_test_sets[identity_percent] = {
+                rep: all_sequences[rep] for rep in new_test_reps if rep in all_sequences
+            }
+            
+            # Accumulate all members of the new test clusters. These will be excluded from the pool for subsequent clustering.
+            members_to_remove = set()
+            for rep in new_test_reps:
+                # Remove all cluster members associated with the selected representative
+                members_to_remove.update(clusters_from_current_pool.get(rep, []))
+                # ALSO remove the representative itself to avoid it leaking into the training set
+                members_to_remove.add(rep)
+            
+            all_test_cluster_members.update(members_to_remove)
+
+            # The pool for the NEXT iteration is the current pool, minus all members of the clusters just selected for the test set.
+            all_sequences = {
+                h: s for h, s in all_sequences.items() if h not in members_to_remove
+            }
+            
+            logging.info(f"Removed {len(members_to_remove)} members of new test clusters. Total quarantined: {len(all_test_cluster_members)}.")
+            logging.info(f"Next clustering pool contains {len(all_sequences)} sequences.")
+            
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logging.error(f"Failed to generate clusters for {identity_percent}%. Skipping. Error: {e}")
-            if pool_fasta_path.exists():
-                pool_fasta_path.unlink()
             continue
         
-        clusters_from_current_pool = parse_clusters(cluster_file)
-        
-        # --- Sample a fixed number of representatives for the test set using stratified random sampling ---
-        all_reps_in_clustering = list(clusters_from_current_pool.keys())
-        
-        # Ensure we have labels for stratification and filter out reps from rare classes
-        rep_to_label = {rep: get_cath_label(rep) for rep in all_reps_in_clustering if get_cath_label(rep)}
-        label_counts = Counter(rep_to_label.values())
-        splittable_reps = [
-            rep for rep in all_reps_in_clustering 
-            if rep in rep_to_label and label_counts[rep_to_label[rep]] >= args.min_label_count_for_split
-        ]
+        finally:
+            # Always clean up the temporary pool file
+            if pool_fasta_path.exists():
+                pool_fasta_path.unlink()
 
-        new_test_reps = set()
-
-        if splittable_reps and args.test_set_ratio > 0:
-            splittable_labels = [rep_to_label[rep] for rep in splittable_reps]
-            # Use train_test_split to get a stratified random sample based on the ratio
-            try:
-                _, selected_reps = train_test_split(
-                    splittable_reps,
-                    test_size=args.test_set_ratio,
-                    stratify=splittable_labels,
-                    random_state=args.random_state
-                )
-                new_test_reps = set(selected_reps)
-            except ValueError:
-                logging.warning(f"Stratified sampling failed for S{identity_percent}. Falling back to random sampling.")
-                # Fallback to non-stratified sampling if stratification is not possible
-                _, selected_reps = train_test_split(
-                    splittable_reps,
-                    test_size=args.test_set_ratio,
-                    random_state=args.random_state
-                )
-                new_test_reps = set(selected_reps)
-
-        logging.info(f"Sampled {len(new_test_reps)} representatives for the S{identity_percent} test set ({args.test_set_ratio:.1%} of splittable clusters).")
-        
-        # The test set for this identity level consists ONLY of these new representatives.
-        final_test_sets[identity_percent] = {
-            rep: all_sequences[rep] for rep in new_test_reps if rep in all_sequences
-        }
-        
-        # Accumulate all members of the new test clusters. These will be excluded from the pool for subsequent clustering.
-        members_to_remove = set()
-        for rep in new_test_reps:
-            # Remove all cluster members associated with the selected representative
-            members_to_remove.update(clusters_from_current_pool.get(rep, []))
-            # ALSO remove the representative itself to avoid it leaking into the training set
-            members_to_remove.add(rep)
-        
-        all_test_cluster_members.update(members_to_remove)
-
-        # The pool for the NEXT iteration is the current pool, minus all members of the clusters just selected for the test set.
-        pool_for_clustering = {
-            h: s for h, s in pool_for_clustering.items() if h not in members_to_remove
-        }
-        
-        logging.info(f"Removed {len(members_to_remove)} members of new test clusters. Total quarantined: {len(all_test_cluster_members)}.")
-        logging.info(f"Next clustering pool contains {len(pool_for_clustering)} sequences.")
-
-        # Clean up the temporary file for this iteration
-        if pool_fasta_path.exists():
-            pool_fasta_path.unlink()
-
-    # The final training pool is what remains in the pool_for_clustering after validation and test members have been removed.
-    final_training_set = pool_for_clustering
+    # The final training pool is what remains in the all_sequences after validation and test members have been removed.
+    final_training_set = all_sequences
 
     # --- Step 3: Final Label Consistency Check ---
     logging.info("\n--- Step 3: Final Label Consistency Check ---")
@@ -419,6 +517,9 @@ def main(args):
         }
         logging.info(f"Filtered S{identity} test set from {original_test_len} to {len(final_test_sets[identity])} sequences.")
 
+    # --- Step 4: Save Holdouts Set ---
+    final_holdouts = initial_holdouts_sequences
+
     # --- Save aggregated and filtered datasets ---
     # Save the single, final training set
     write_fasta(output_base_dir / 'train.fasta', final_training_set)
@@ -426,15 +527,20 @@ def main(args):
     logging.info(f"\nSaved final training set to {output_base_dir / 'train.fasta'}")
     logging.info(f"Saved final validation set to {output_base_dir / 'val.fasta'}")
 
-    # Save each test set in its identity-specific directory
+    # Save each test set in the test/ directory with s{identity}.fasta naming
+    test_dir = output_base_dir / 'test'
+    test_dir.mkdir(parents=True, exist_ok=True)
     for identity, test_seqs in final_test_sets.items():
-        identity_dir = output_base_dir / f"s{identity}"
-        identity_dir.mkdir(parents=True, exist_ok=True)
-        write_fasta(identity_dir / 'test.fasta', test_seqs)
-        logging.info(f"Saved S{identity} test set to {identity_dir / 'test.fasta'}")
+        write_fasta(test_dir / f's{identity}.fasta', test_seqs)
+        logging.info(f"Saved S{identity} test set to {test_dir / f's{identity}.fasta'}")
+
+    # Save the holdouts set
+    if final_holdouts:
+        write_fasta(output_base_dir / 'holdouts.fasta', final_holdouts)
+        logging.info(f"Saved holdouts set to {output_base_dir / 'holdouts.fasta'}")
 
     # --- Update and Print Final Summary Table ---
-    summary_text = generate_summary(final_training_set, final_validation_set, final_test_sets)
+    summary_text = generate_summary(final_training_set, final_validation_set, final_test_sets, final_holdouts)
 
     # Print to console
     print("\n" + summary_text)
@@ -448,6 +554,9 @@ def main(args):
             logging.info(f"Summary table saved to {summary_file_path}")
         except IOError as e:
             logging.error(f"Failed to write summary file to {summary_file_path}: {e}")
+
+    # Clean up temporary files and mmseqs2 tmp directories
+    cleanup_temp_files(output_base_dir)
 
 
 if __name__ == '__main__':
@@ -537,6 +646,24 @@ if __name__ == '__main__':
         "--include_class_4_and_6",
         action="store_true",
         help="If set, include CATH superfamilies belonging to Class 4 and 6. By default, they are excluded."
+    )
+    parser.add_argument(
+        "--num_holdouts_per_class",
+        type=int,
+        default=2,
+        help="Number of superfamilies to include in the initial holdouts set from Classes 1, 2, and 3."
+    )
+    parser.add_argument(
+        "--min_seq_length_for_holdouts",
+        type=int,
+        default=2,
+        help="Minimum number of sequences a superfamily must have to be included in the initial holdouts set."
+    )
+    parser.add_argument(
+        "--max_seq_length_for_holdouts",
+        type=int,
+        default=10,
+        help="Maximum number of sequences a superfamily can have to be included in the initial holdouts set."
     )
     
     args = parser.parse_args()
