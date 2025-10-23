@@ -13,7 +13,7 @@ paths:
   label_file: data/cath-domain-sf-list.txt
 
 data:
-  batch_size: 1024
+  batch_size: 2048
   num_workers: 4
   pin_memory: true
 
@@ -59,7 +59,7 @@ learning:
 
 # Training Configuration
 trainer:
-  max_epochs: 500
+  max_epochs: 1000
   accelerator: auto
   devices: auto
   precision: 16-mixed
@@ -90,7 +90,7 @@ logging:
     - _target_: lightning.pytorch.callbacks.EarlyStopping
       monitor: val/knn_balanced_accuracy
       mode: max
-      patience: 50
+      patience: 500
       min_delta: 0.0001
     - _target_: lightning.pytorch.callbacks.LearningRateMonitor
       logging_interval: step
