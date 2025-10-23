@@ -90,7 +90,7 @@ logging:
     - _target_: lightning.pytorch.callbacks.EarlyStopping
       monitor: val/knn_balanced_accuracy
       mode: max
-      patience: 500
+      patience: 600
       min_delta: 0.0001
     - _target_: lightning.pytorch.callbacks.LearningRateMonitor
       logging_interval: step
