@@ -34,8 +34,8 @@ model:
   _recursive_: false
   num_classes: null
   input_dim: 1024
-  proj_hidden_dims: [1024,512, 256]
-  proj_output_dim: 128
+  proj_hidden_dims: [1024]
+  proj_output_dim: 256
   dropout: 0.1
   loss_type: supcon
   loss_params:
