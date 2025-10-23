@@ -8,7 +8,7 @@ seed: 42
 paths:
   train_fasta: data/clustered_datasets/train.fasta
   val_fasta: data/clustered_datasets/val.fasta
-  test_fasta: data/clustered_datasets/s30/test.fasta
+  test_fasta: data/clustered_datasets/test  # Can be single file or folder with multiple FASTA files
   embedding_file: data/cath-domain-seqs-S100.h5
   label_file: data/cath-domain-sf-list.txt
 
@@ -85,7 +85,6 @@ logging:
       monitor: val/knn_balanced_accuracy
       mode: max
       save_top_k: 1
-      filename: "epoch={epoch:02d}-val_knn_bal_acc={val/knn_balanced_accuracy:.4f}"
       dirpath: ${hydra:run.dir}/checkpoints
     - _target_: lightning.pytorch.callbacks.EarlyStopping
       monitor: val/knn_balanced_accuracy
