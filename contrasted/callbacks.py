@@ -54,28 +54,36 @@ class KNNEvaluationCallback(L.Callback):
         
         Rebuilds the FAISS index from scratch with final model weights.
         """
-        
         # Build index from training data
         train_embs, train_labs = self._collect_embeddings(
             trainer, pl_module, trainer.datamodule.train_dataset
         )
         faiss_index = build_faiss_index(train_embs.cpu().numpy().astype(np.float32))
         
-        # Evaluate on test set
-        test_embs, test_labs = self._collect_embeddings(
-            trainer, pl_module, trainer.datamodule.test_dataset
-        )
-        metrics = self._compute_metrics(faiss_index, train_labs, test_embs, test_labs)
+        # Determine test datasets to evaluate
+        if hasattr(trainer.datamodule, 'test_datasets') and trainer.datamodule.test_datasets:
+            test_sets = trainer.datamodule.test_datasets.items()
+        else:
+            test_sets = [("", trainer.datamodule.test_dataset)]
         
-        for name, value in metrics.items():
-            pl_module.log(
-                f"test/knn_{name}",
-                value,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
+        # Evaluate each test dataset
+        for test_name, test_dataset in test_sets:
+            test_embs, test_labs = self._collect_embeddings(
+                trainer, pl_module, test_dataset
             )
+            metrics = self._compute_metrics(faiss_index, train_labs, test_embs, test_labs)
+            
+            # Log metrics with appropriate prefix
+            prefix = f"test/{test_name}/" if test_name else "test/"
+            for name, value in metrics.items():
+                pl_module.log(
+                    f"{prefix}knn_{name}",
+                    value,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                    sync_dist=True,
+                )
     
     @torch.no_grad()
     def _collect_embeddings(

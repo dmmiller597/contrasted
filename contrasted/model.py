@@ -123,7 +123,7 @@ class CathSupConModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         return self._shared_step(batch, batch_idx, 'val')
     
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         return self._shared_step(batch, batch_idx, 'test')
     
     def configure_optimizers(self):
