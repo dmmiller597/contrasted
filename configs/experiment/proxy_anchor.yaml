@@ -5,8 +5,8 @@
 model:
   loss_type: proxy_anchor
   loss_params:
-    margin: 0.3
-    alpha: 48
+    margin: 0.2
+    alpha: 64
 
 learning:
   lr: 0.001
