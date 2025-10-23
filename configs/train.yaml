@@ -35,7 +35,7 @@ model:
   num_classes: null
   input_dim: 1024
   proj_hidden_dims: [1024]
-  proj_output_dim: 256
+  proj_output_dim: 512
   dropout: 0.1
   loss_type: supcon
   loss_params:
