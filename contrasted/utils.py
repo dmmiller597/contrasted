@@ -75,14 +75,27 @@ def load_labels(label_path: Path) -> Tuple[Dict[str, int], Dict[int, str]]:
     
     with open(label_path, "r") as f:
         for line in f:
-            if line.startswith("#"):
-                continue
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                domain_id, superfamily = parts[0], parts[1]
-                if superfamily not in sf_to_idx:
-                    sf_to_idx[superfamily] = len(sf_to_idx)
-                id_to_sf_idx[domain_id] = sf_to_idx[superfamily]
+            if not line.startswith("#"):
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    domain_id, superfamily = parts[0], parts[1]
+                    if superfamily not in sf_to_idx:
+                        sf_to_idx[superfamily] = len(sf_to_idx)
+                    id_to_sf_idx[domain_id] = sf_to_idx[superfamily]
 
-    idx_to_sf = {v: k for k, v in sf_to_idx.items()}
-    return id_to_sf_idx, idx_to_sf
+    return id_to_sf_idx, {v: k for k, v in sf_to_idx.items()}
+
+
+def resolve_fasta_paths(fasta_input: Path) -> Dict[str, Path]:
+    """Resolve FASTA paths - handles single file or directory."""
+    if fasta_input.is_dir():
+        fasta_files = sorted(fasta_input.glob("*.fasta")) + sorted(fasta_input.glob("*.fa"))
+        if not fasta_files:
+            logger.warning(f"No FASTA files found in directory: {fasta_input}")
+            return {}
+        logger.info(f"Found {len(fasta_files)} FASTA files in {fasta_input}")
+        return {f.stem: f for f in fasta_files}
+    if fasta_input.is_file():
+        return {fasta_input.stem: fasta_input}
+    logger.warning(f"FASTA path not found: {fasta_input}")
+    return {}
