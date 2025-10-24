@@ -304,6 +304,13 @@ def main(args):
         random_state=args.random_state
     )
     logging.info(f"Created initial holdouts set with {len(initial_holdouts_sequences)} sequences.")
+    
+    # Remove holdout sequences from the pool to prevent them from appearing in train/val/test sets
+    holdout_headers = set(initial_holdouts_sequences.keys())
+    all_sequences = {
+        h: s for h, s in all_sequences.items() if h not in holdout_headers
+    }
+    logging.info(f"Removed {len(holdout_headers)} holdout sequences from pool. Remaining pool: {len(all_sequences)} sequences.")
 
     # --- Step 1: Create Validation Set from Validation Identity Clustering ---
     logging.info(f"\n--- Step 1: Creating Validation Set at {args.val_identity_threshold}% Identity ---")
@@ -516,6 +523,15 @@ def main(args):
             h: s for h, s in final_test_sets[identity].items() if get_cath_label(h) in final_train_labels
         }
         logging.info(f"Filtered S{identity} test set from {original_test_len} to {len(final_test_sets[identity])} sequences.")
+
+    # Check that no holdout superfamilies appear in training set
+    holdout_labels = {get_cath_label(h) for h in initial_holdouts_sequences.keys()}
+    train_holdout_overlap = final_train_labels & holdout_labels
+    if train_holdout_overlap:
+        logging.error(f"ERROR: Found {len(train_holdout_overlap)} holdout superfamilies in training set: {train_holdout_overlap}")
+        raise ValueError(f"Holdout superfamilies found in training set: {train_holdout_overlap}")
+    else:
+        logging.info(f"✓ Verified: No holdout superfamilies ({len(holdout_labels)} total) appear in training set.")
 
     # --- Step 4: Save Holdouts Set ---
     final_holdouts = initial_holdouts_sequences
