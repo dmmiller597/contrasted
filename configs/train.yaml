@@ -37,11 +37,11 @@ model:
   proj_hidden_dims: [1024]
   proj_output_dim: 128
   dropout: 0.3
-  loss_type: supcon
+  loss_type: proxy_anchor
   loss_params:
     temperature: 0.05
-    alpha: 32
-    margin: 0.1
+    alpha: 64
+    margin: 0.2
   learning_rate: ${learning.lr}
   weight_decay: ${learning.weight_decay}
   epochs: ${trainer.max_epochs}
@@ -52,14 +52,14 @@ model:
 
 # Optimization Configuration
 learning:
-  lr: 0.0005
+  lr: 0.001
   weight_decay: 0.0001
   num_warmup_epochs: 20
   eta_min: 0.000001
 
 # Training Configuration
 trainer:
-  max_epochs: 1000
+  max_epochs: 250
   accelerator: auto
   devices: auto
   precision: 16-mixed
@@ -89,7 +89,7 @@ logging:
     - _target_: lightning.pytorch.callbacks.EarlyStopping
       monitor: val/knn_balanced_accuracy
       mode: max
-      patience: 500
+      patience: 25
       min_delta: 0.0001
     - _target_: lightning.pytorch.callbacks.LearningRateMonitor
       logging_interval: step
