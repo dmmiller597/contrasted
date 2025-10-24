@@ -13,7 +13,7 @@ paths:
   label_file: data/cath-domain-sf-list.txt
 
 data:
-  batch_size: 2048
+  batch_size: 1024
   num_workers: 4
   pin_memory: true
 
@@ -37,11 +37,11 @@ model:
   proj_hidden_dims: [1024]
   proj_output_dim: 128
   dropout: 0.3
-  loss_type: supcon
+  loss_type: proxy_anchor
   loss_params:
     temperature: 0.07
-    alpha: 32
-    margin: 0.1
+    alpha: 48
+    margin: 0.2
   learning_rate: ${learning.lr}
   weight_decay: ${learning.weight_decay}
   epochs: ${trainer.max_epochs}
