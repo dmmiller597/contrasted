@@ -82,12 +82,12 @@ logging:
     save_dir: ${hydra:run.dir}/wandb
   callbacks:
     - _target_: lightning.pytorch.callbacks.ModelCheckpoint
-      monitor: val/knn_balanced_accuracy
+      monitor: val/knn_macro_f1
       mode: max
       save_top_k: 1
       dirpath: ${hydra:run.dir}/checkpoints
     - _target_: lightning.pytorch.callbacks.EarlyStopping
-      monitor: val/knn_balanced_accuracy
+      monitor: val/knn_macro_f1
       mode: max
       patience: 100
       min_delta: 0.0001
