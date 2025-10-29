@@ -36,7 +36,7 @@ model:
   input_dim: 1024
   proj_hidden_dims: [1024]
   proj_output_dim: 128
-  dropout: 0.2
+  dropout: 0.3
   loss_type: proxy_anchor
   loss_params:
     temperature: 0.07
