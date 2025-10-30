@@ -6,9 +6,9 @@ seed: 42
 
 # Data Configuration
 paths:
-  train_fasta: data/clustered_datasets/train.fasta
-  val_fasta: data/clustered_datasets/val.fasta
-  test_fasta: data/clustered_datasets/test/s30.fasta
+  train_fasta: data/clustered-datasets/train.fasta
+  val_fasta: data/clustered-datasets/val.fasta
+  test_fasta: data/clustered-datasets/test/s30.fasta
   embedding_file: data/cath-domain-seqs-S100.h5
   label_file: data/cath-domain-sf-list.txt
 
