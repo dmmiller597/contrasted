@@ -97,9 +97,9 @@ def get_embeddings( seq_path, emb_path, model_dir, split_char, id_field,
         seq = prefix + ' ' + ' '.join(list(seq))
         batch.append((pdb_id,seq,seq_len))
 
-        # count residues in current batch and add the last sequence length to
-        # avoid that batches with (n_res_batch > max_residues) get processed 
-        n_res_batch = sum([ s_len for  _, _, s_len in batch ]) + seq_len 
+        # count residues in current batch (each sequence length is already included in batch)
+        # this ensures we don't double-count the last sequence and can pack batches up to max_residues
+        n_res_batch = sum([ s_len for  _, _, s_len in batch ])
         if len(batch) >= max_batch or n_res_batch>=max_residues or seq_idx==len(seq_dict) or seq_len>max_seq_len:
             pdb_ids, seqs, seq_lens = zip(*batch)
             batch = list()
