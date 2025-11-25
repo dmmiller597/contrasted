@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Jun 16 14:27:44 2023
-
-@author: mheinzinger
 
 Incremental version that saves embeddings after each batch rather than at the end.
 Useful for long-running jobs where you want to preserve progress.
+
+LMDB version for handling large-scale datasets (13M+ sequences).
 """
 
 import argparse
 import time
 from pathlib import Path
 import torch
-import h5py
+import lmdb
+import numpy as np
 from tqdm import tqdm
 from transformers import T5EncoderModel, T5Tokenizer
 
@@ -24,6 +24,10 @@ elif torch.backends.mps.is_available():
 else:
     device = torch.device('cpu')
 print("Using device: {}".format(device))
+
+# Constants for LMDB embedding storage
+EMBEDDING_DIM = 1024
+EMBEDDING_DTYPE = np.float16  # half precision
 
 
 def get_T5_model(model_dir):
@@ -60,6 +64,31 @@ def read_fasta( fasta_path, split_char, id_field, is_3Di ):
     return sequences
 
 
+def embedding_to_bytes(emb: np.ndarray) -> bytes:
+    """Convert numpy embedding to bytes for LMDB storage."""
+    return emb.astype(EMBEDDING_DTYPE).tobytes()
+
+
+def bytes_to_embedding(data: bytes, per_protein: bool = True) -> np.ndarray:
+    """Convert bytes back to numpy embedding."""
+    arr = np.frombuffer(data, dtype=EMBEDDING_DTYPE)
+    if per_protein:
+        return arr  # 1D array of shape (EMBEDDING_DIM,)
+    else:
+        # Per-residue: reshape to (seq_len, EMBEDDING_DIM)
+        return arr.reshape(-1, EMBEDDING_DIM)
+
+
+def get_existing_keys(env: lmdb.Environment) -> set:
+    """Get all existing keys from LMDB database."""
+    existing_keys = set()
+    with env.begin(write=False) as txn:
+        cursor = txn.cursor()
+        for key, _ in cursor:
+            existing_keys.add(key.decode('utf-8'))
+    return existing_keys
+
+
 def get_embeddings( seq_path, emb_path, model_dir, split_char, id_field, 
                        per_protein, half_precision, is_3Di,
                        max_residues=4000, max_seq_len=1000, max_batch=100 ):
@@ -90,95 +119,108 @@ def get_embeddings( seq_path, emb_path, model_dir, split_char, id_field,
     print("Average sequence length: {}".format(avg_length))
     print("Number of sequences >{}: {}".format(max_seq_len, n_long))
     
-    # Open H5 file in append mode (or create if doesn't exist)
-    # Check which embeddings already exist
-    existing_keys = set()
-    file_mode = 'a' if emb_path.exists() else 'w'
-    if file_mode == 'a':
-        try:
-            with h5py.File(str(emb_path), 'r') as hf:
-                existing_keys = set(hf.keys())
-            print(f"Found existing file with {len(existing_keys)} embeddings. Will skip already processed sequences.")
-        except Exception as e:
-            print(f"Warning: Could not read existing file: {e}. Starting fresh.")
-            file_mode = 'w'
-            existing_keys = set()
+    # Calculate LMDB map size
+    # 13M sequences * 1024 dims * 2 bytes (float16) = ~26GB for embeddings
+    # Add overhead for keys and LMDB structure (~50% extra to be safe)
+    estimated_size = len(seq_dict) * EMBEDDING_DIM * 2 * 2  # 2x safety factor
+    map_size = max(estimated_size, 50 * 1024 * 1024 * 1024)  # At least 50GB
     
-    # Filter out already processed sequences
-    seq_dict = [(pdb_id, seq) for pdb_id, seq in seq_dict if pdb_id not in existing_keys]
+    # Create/open LMDB environment
+    emb_path.mkdir(parents=True, exist_ok=True)
+    env = lmdb.open(
+        str(emb_path),
+        map_size=map_size,
+        subdir=True,
+        readonly=False,
+        meminit=False,
+        map_async=True,
+    )
+    
+    # Check which embeddings already exist
+    print("Scanning existing embeddings...")
+    existing_keys = get_existing_keys(env)
     n_skipped = len(existing_keys)
     
     if n_skipped > 0:
-        print(f"Skipping {n_skipped} already processed sequences.")
+        print(f"Found {n_skipped} existing embeddings. Skipping already processed sequences.")
+    
+    # Filter out already processed sequences
+    seq_dict = [(pdb_id, seq) for pdb_id, seq in seq_dict if pdb_id not in existing_keys]
     print(f"Processing {len(seq_dict)} remaining sequences.")
     
     # Early return if all sequences already processed
     if len(seq_dict) == 0:
         print("All sequences have already been processed. Exiting.")
+        env.close()
         return True
     
     start = time.time()
     batch = list()
     total_embedded = n_skipped
     example_shown = False
+    batch_embeddings = []  # Accumulate batch results for single transaction
     
-    # Open H5 file for writing (append mode)
-    with h5py.File(str(emb_path), file_mode) as hf:
-        for seq_idx, (pdb_id, seq) in enumerate(tqdm(seq_dict, total=len(seq_dict), desc="Embedding"),1):
-            # replace non-standard AAs
-            seq = seq.replace('U','X').replace('Z','X').replace('O','X')
-            seq_len = len(seq)
-            seq = prefix + ' ' + ' '.join(list(seq))
-            batch.append((pdb_id,seq,seq_len))
+    for seq_idx, (pdb_id, seq) in enumerate(tqdm(seq_dict, total=len(seq_dict), desc="Embedding"),1):
+        # replace non-standard AAs
+        seq = seq.replace('U','X').replace('Z','X').replace('O','X')
+        seq_len = len(seq)
+        seq = prefix + ' ' + ' '.join(list(seq))
+        batch.append((pdb_id,seq,seq_len))
 
-            # count residues in current batch (each sequence length is already included in batch)
-            # this ensures we don't double-count the last sequence and can pack batches up to max_residues
-            n_res_batch = sum([ s_len for  _, _, s_len in batch ])
-            if len(batch) >= max_batch or n_res_batch>=max_residues or seq_idx==len(seq_dict) or seq_len>max_seq_len:
-                pdb_ids, seqs, seq_lens = zip(*batch)
-                batch = list()
+        # count residues in current batch (each sequence length is already included in batch)
+        # this ensures we don't double-count the last sequence and can pack batches up to max_residues
+        n_res_batch = sum([ s_len for  _, _, s_len in batch ])
+        if len(batch) >= max_batch or n_res_batch>=max_residues or seq_idx==len(seq_dict) or seq_len>max_seq_len:
+            pdb_ids, seqs, seq_lens = zip(*batch)
+            batch = list()
 
-                token_encoding = vocab.batch_encode_plus(seqs, 
-                                                         add_special_tokens=True, 
-                                                         padding="longest", 
-                                                         return_tensors='pt' 
-                                                         ).to(device)
-                try:
-                    with torch.no_grad():
-                        embedding_repr = model(token_encoding.input_ids, 
-                                               attention_mask=token_encoding.attention_mask
-                                               )
-                except RuntimeError:
-                    print("RuntimeError during embedding for {} (L={})".format(
-                        pdb_id, seq_len)
-                        )
-                    continue
+            token_encoding = vocab.batch_encode_plus(seqs, 
+                                                     add_special_tokens=True, 
+                                                     padding="longest", 
+                                                     return_tensors='pt' 
+                                                     ).to(device)
+            try:
+                with torch.no_grad():
+                    embedding_repr = model(token_encoding.input_ids, 
+                                           attention_mask=token_encoding.attention_mask
+                                           )
+            except RuntimeError:
+                print("RuntimeError during embedding for {} (L={})".format(
+                    pdb_id, seq_len)
+                    )
+                continue
+            
+            # batch-size x seq_len x embedding_dim
+            # extra token is added at the end of the seq
+            for batch_idx, identifier in enumerate(pdb_ids):
+                s_len = seq_lens[batch_idx]
+                # account for prefix in offset
+                emb = embedding_repr.last_hidden_state[batch_idx,1:s_len+1]
                 
-                # batch-size x seq_len x embedding_dim
-                # extra token is added at the end of the seq
-                for batch_idx, identifier in enumerate(pdb_ids):
-                    s_len = seq_lens[batch_idx]
-                    # account for prefix in offset
-                    emb = embedding_repr.last_hidden_state[batch_idx,1:s_len+1]
-                    
-                    if per_protein:
-                        emb = emb.mean(dim=0)
-                    emb_numpy = emb.detach().cpu().numpy().squeeze()
-                    
-                    # Save immediately to H5 file
-                    if identifier in hf:
-                        # Overwrite if exists (shouldn't happen due to filtering, but handle gracefully)
-                        del hf[identifier]
-                    hf.create_dataset(identifier, data=emb_numpy)
-                    total_embedded += 1
-                    
-                    if not example_shown:
-                        print("Example: embedded protein {} with length {} to emb. of shape: {}".format(
-                                    identifier, s_len, emb_numpy.shape))
-                        example_shown = True
+                if per_protein:
+                    emb = emb.mean(dim=0)
+                emb_numpy = emb.detach().cpu().numpy().squeeze()
                 
-                # Flush after each batch to ensure data is written to disk immediately
-                hf.flush()
+                # Accumulate for batch write
+                batch_embeddings.append((identifier, emb_numpy))
+                total_embedded += 1
+                
+                if not example_shown:
+                    print("Example: embedded protein {} with length {} to emb. of shape: {}".format(
+                                identifier, s_len, emb_numpy.shape))
+                    example_shown = True
+            
+            # Write batch to LMDB
+            with env.begin(write=True) as txn:
+                for identifier, emb_numpy in batch_embeddings:
+                    key = identifier.encode('utf-8')
+                    value = embedding_to_bytes(emb_numpy)
+                    txn.put(key, value)
+            batch_embeddings = []
+    
+    # Sync and close
+    env.sync()
+    env.close()
 
     end = time.time()
     
@@ -196,9 +238,9 @@ def create_arg_parser():
     parser = argparse.ArgumentParser(description=( 
             'embed_incremental.py creates ProstT5-Encoder embeddings for a given text '+
             ' file containing sequence(s) in FASTA-format. ' +
-            'Embeddings are saved incrementally after each batch, allowing for ' +
+            'Embeddings are saved incrementally after each batch to LMDB, allowing for ' +
             'resume capability if the script is interrupted. ' +
-            'Example: python embed_incremental.py --input /path/to/some_sequences.fasta --output /path/to/some_embeddings.h5 --half 1 --is_3Di 0 --per_protein 1' ) )
+            'Example: python embed_incremental.py --input /path/to/some_sequences.fasta --output /path/to/embeddings_lmdb --half 1 --is_3Di 0 --per_protein 1' ) )
     
     # Required positional argument
     parser.add_argument( '-i', '--input', required=True, type=str,
@@ -206,7 +248,7 @@ def create_arg_parser():
 
     # Optional positional argument
     parser.add_argument( '-o', '--output', required=True, type=str, 
-                    help='A path for saving the created embeddings as HDF5 file.')
+                    help='A path for saving the created embeddings as LMDB directory.')
 
     
     # Required positional argument
@@ -247,7 +289,7 @@ def main():
     args       = parser.parse_args()
     
     seq_path   = Path( args.input ) # path to input FASTAS
-    emb_path   = Path( args.output) # path where embeddings should be stored
+    emb_path   = Path( args.output) # path where embeddings should be stored (LMDB dir)
     model_dir  = args.model # path/repo_link to checkpoint
     
     split_char = args.split_char
@@ -272,4 +314,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
