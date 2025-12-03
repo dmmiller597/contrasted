@@ -63,11 +63,12 @@ def normalize_h5_key(h5_key: str) -> str:
 def extract_domain_id(h5_key: str) -> str:
     """Extract domain ID from HDF5 key.
     
-    Handles two formats:
+    Handles multiple formats:
     - Format 1 (pipe): cath|4_4_0|12e8H01_1-113 -> 12e8H01
     - Format 2 (underscore): cath_4_4_0_107lA00_1-162 -> 107lA00
+    - Format 3 (non-CATH): AF-A0A1A7ZDH5-F1-model_v4_TED01 -> AF-A0A1A7ZDH5-F1-model_v4_TED01 (returns as-is)
     """
-    # Try pipe format first
+    # Try pipe format first (CATH format)
     if '|' in h5_key:
         return h5_key.split('|')[2].split('_')[0]
     
@@ -75,10 +76,11 @@ def extract_domain_id(h5_key: str) -> str:
     # Split by underscore: ['cath', '4', '4', '0', '107lA00', '1-162']
     # Domain ID is at index 4 (5th part)
     parts = h5_key.split('_')
-    if len(parts) >= 5:
+    if len(parts) >= 5 and parts[0] == 'cath':
         return parts[4]
     
-    raise ValueError(f"Could not extract domain ID from key: {h5_key}")
+    # For non-CATH formats (e.g., AlphaFold, Uniprot), return the full key as ID
+    return h5_key
 
 
 def load_h5_keys_from_fasta(fasta_path: Path) -> List[str]:
@@ -207,7 +209,8 @@ class EmbeddingReader:
                 
                 # Convert bytes to numpy array (float16, 1024 dims)
                 # Keep as float16 for memory efficiency; downstream code converts to float32
-                arr = np.frombuffer(value, dtype=np.float16)
+                # Make writable copy to avoid PyTorch warnings
+                arr = np.frombuffer(value, dtype=np.float16).copy()
                 return arr
         else:
             # HDF5 format
