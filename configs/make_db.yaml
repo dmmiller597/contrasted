@@ -1,5 +1,5 @@
-input: data/clustered_datasets/train.fasta # the input sequences we wish to make our database from
-model_path: /SAN/orengolab/functional-families/contrasted/outputs/2025-10-23/17-47-07/checkpoints/epoch=epoch=100-val_knn_bal_acc=val/knn_balanced_accuracy=0.9371.ckpt  # the model we want to use to embed our sequences
+input: data/clustered-datasets/train_excl_holdouts40.fasta # the input sequences we wish to make our database from
+model_path: outputs/2025-11-08/19-32-45/checkpoints/epoch=162-step=12551.ckpt  # the model we want to use to embed our sequences
 index_path: data/vector_db/train.index  # the path we want to save our vector index to
 embedding_file: data/cath-domain-seqs-S100.h5  # HDF5 file with pre-computed embeddings
 ids: null # if we only want to build our index from a subset of input [OPTIONAL]

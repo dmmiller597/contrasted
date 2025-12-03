@@ -3,7 +3,6 @@
 import hydra
 from omegaconf import DictConfig
 import torch
-import h5py
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -14,12 +13,27 @@ import logging
 import time
 import warnings
 
-from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id, resolve_fasta_paths
+from contrasted.utils import load_h5_keys_from_fasta, load_labels, extract_domain_id, resolve_fasta_paths, EmbeddingReader
 from contrasted.model import CathSupConModel
 from contrasted.faiss_utils import search_faiss_index
 import faiss
 
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(output_dir: Path):
+    """Configure logging to file and console."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(output_dir / "annotate.log"),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
 def compute_consensus(
@@ -41,7 +55,7 @@ def compute_consensus(
 @torch.no_grad()
 def annotate_sequences(
     model: CathSupConModel,
-    h5_file: h5py.File,
+    embedding_reader: EmbeddingReader,
     h5_keys: list[str],
     index: faiss.Index,
     ref_domain_ids: np.ndarray,
@@ -65,11 +79,8 @@ def annotate_sequences(
         batch_query_ids = []
         
         for h5_key in batch_keys:
-            try:
-                embedding = torch.from_numpy(h5_file[h5_key][:]).float()
-                batch_embs.append(embedding)
-                batch_query_ids.append(extract_domain_id(h5_key))
-            except KeyError:
+            embedding = embedding_reader.get_embedding(h5_key)
+            if embedding is None:
                 logger.warning(f"Missing embedding for key: {h5_key}")
                 query_id = extract_domain_id(h5_key)
                 result = {"query_id": query_id, "predicted_annotation": "missing_embedding"}
@@ -78,6 +89,9 @@ def annotate_sequences(
                     result["true_annotation"] = idx_to_annotation.get(true_idx, "unknown")
                 results.append(result)
                 continue
+            
+            batch_embs.append(torch.from_numpy(embedding).float())
+            batch_query_ids.append(extract_domain_id(h5_key))
         
         if not batch_embs:
             continue
@@ -223,12 +237,12 @@ def main(cfg: DictConfig):
     logger.info(f"Loaded {len(idx_to_annotation)} annotation classes")
     
     output_dir = Path(cfg.get("output_dir", "outputs/annotations"))
-    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(output_dir)
     
     embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
     logger.info(f"Loading embeddings from: {embedding_file}")
     
-    with h5py.File(embedding_file, "r") as h5f:
+    with EmbeddingReader(embedding_file) as embedding_reader:
         for input_name, fasta_path in input_paths.items():
             logger.info(f"\n{'='*70}\nProcessing: {input_name} ({fasta_path})\n{'='*70}")
             
@@ -237,7 +251,7 @@ def main(cfg: DictConfig):
             
             start_time = time.time()
             results = annotate_sequences(
-                model, h5f, h5_keys, index, ref_domain_ids, id_to_annotation, idx_to_annotation,
+                model, embedding_reader, h5_keys, index, ref_domain_ids, id_to_annotation, idx_to_annotation,
                 device, cfg.k, cfg.distance_cutoff, cfg.return_distance, cfg.return_confidence,
                 cfg.get("return_true_annotation", True), 2048
             )

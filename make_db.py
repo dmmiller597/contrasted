@@ -3,13 +3,12 @@
 import hydra
 from omegaconf import DictConfig
 import torch
-import h5py
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import logging
 
-from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id
+from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id, EmbeddingReader
 from contrasted.model import CathSupConModel
 from contrasted.faiss_utils import build_faiss_index
 
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 @torch.no_grad()
 def embed_sequences(
     model: CathSupConModel,
-    h5_file: h5py.File,
+    embedding_reader: EmbeddingReader,
     h5_keys: list[str],
     device: torch.device,
     batch_size: int = 2048,
@@ -28,7 +27,7 @@ def embed_sequences(
     
     Args:
         model: Trained CathSupConModel
-        h5_file: Open HDF5 file with embeddings
+        embedding_reader: EmbeddingReader instance (HDF5 or LMDB)
         h5_keys: List of HDF5 keys to process
         device: Device for inference
         batch_size: Batch size for processing
@@ -46,13 +45,13 @@ def embed_sequences(
         batch_embs = []
         
         for h5_key in batch_keys:
-            try:
-                embedding = torch.from_numpy(h5_file[h5_key][:]).float()
-                batch_embs.append(embedding)
-                domain_ids.append(extract_domain_id(h5_key))
-            except KeyError:
+            embedding = embedding_reader.get_embedding(h5_key)
+            if embedding is None:
                 logger.warning(f"Missing embedding for key: {h5_key}")
                 continue
+            
+            batch_embs.append(torch.from_numpy(embedding).float())
+            domain_ids.append(extract_domain_id(h5_key))
         
         if not batch_embs:
             continue
@@ -109,9 +108,9 @@ def main(cfg: DictConfig):
     embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
     logger.info(f"Loading embeddings from: {embedding_file}")
     
-    with h5py.File(embedding_file, "r") as h5f:
+    with EmbeddingReader(embedding_file) as embedding_reader:
         embeddings_matrix, domain_ids = embed_sequences(
-            model, h5f, h5_keys, device, batch_size=256
+            model, embedding_reader, h5_keys, device, batch_size=256
         )
     
     # Validate embeddings

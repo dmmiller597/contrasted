@@ -3,7 +3,9 @@ import numpy as np
 import torch
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union, Optional
+import h5py
+import lmdb
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +45,40 @@ def fasta_to_h5_key(header: str) -> str:
     return header.strip().lstrip('>').replace('/', '_')
 
 
+def normalize_h5_key(h5_key: str) -> str:
+    """Normalize H5 key to underscore format for consistent access.
+    
+    Converts pipe format to underscore format:
+    - Input: cath|4_4_0|12e8H01_1-113
+    - Output: cath_4_4_0_12e8H01_1-113
+    
+    If already in underscore format, returns as-is.
+    """
+    if '|' in h5_key:
+        # Convert pipe format to underscore format
+        return h5_key.replace('|', '_')
+    return h5_key
+
+
 def extract_domain_id(h5_key: str) -> str:
     """Extract domain ID from HDF5 key.
     
-    Format: cath|4_4_0|12e8H01_1-113 -> 12e8H01
+    Handles two formats:
+    - Format 1 (pipe): cath|4_4_0|12e8H01_1-113 -> 12e8H01
+    - Format 2 (underscore): cath_4_4_0_107lA00_1-162 -> 107lA00
     """
-    return h5_key.split('|')[2].split('_')[0]
+    # Try pipe format first
+    if '|' in h5_key:
+        return h5_key.split('|')[2].split('_')[0]
+    
+    # Handle underscore format: cath_4_4_0_107lA00_1-162
+    # Split by underscore: ['cath', '4', '4', '0', '107lA00', '1-162']
+    # Domain ID is at index 4 (5th part)
+    parts = h5_key.split('_')
+    if len(parts) >= 5:
+        return parts[4]
+    
+    raise ValueError(f"Could not extract domain ID from key: {h5_key}")
 
 
 def load_h5_keys_from_fasta(fasta_path: Path) -> List[str]:
@@ -99,3 +129,108 @@ def resolve_fasta_paths(fasta_input: Path) -> Dict[str, Path]:
         return {fasta_input.stem: fasta_input}
     logger.warning(f"FASTA path not found: {fasta_input}")
     return {}
+
+
+class EmbeddingReader:
+    """Unified interface for reading embeddings from HDF5 or LMDB."""
+    
+    def __init__(self, embedding_path: Path):
+        """Initialize reader for HDF5 or LMDB embedding storage.
+        
+        Args:
+            embedding_path: Path to HDF5 file (.h5) or LMDB directory
+        """
+        self.embedding_path = Path(embedding_path)
+        self.is_lmdb = self.embedding_path.is_dir()
+        self.is_h5 = self.embedding_path.is_file() and self.embedding_path.suffix == '.h5'
+        
+        if not (self.is_lmdb or self.is_h5):
+            raise ValueError(
+                f"Embedding path must be HDF5 file (.h5) or LMDB directory. "
+                f"Got: {embedding_path}"
+            )
+        
+        if self.is_lmdb:
+            self._init_lmdb()
+        else:
+            self._init_h5()
+    
+    def _init_lmdb(self):
+        """Initialize LMDB environment."""
+        self.env = lmdb.open(
+            str(self.embedding_path),
+            readonly=True,
+            lock=False,
+            readahead=False,
+            meminit=False,
+        )
+        logger.info(f"Opened LMDB database at: {self.embedding_path}")
+    
+    def _init_h5(self):
+        """Initialize HDF5 file handle."""
+        self.h5_file = h5py.File(self.embedding_path, 'r')
+        logger.info(f"Opened HDF5 file at: {self.embedding_path}")
+    
+    def get_embedding(self, key: str) -> Optional[np.ndarray]:
+        """Get embedding for a given key.
+        
+        Args:
+            key: HDF5 key (full format like "cath|4_4_0|12e8H01_1-113") 
+                 or domain ID (like "12e8H01")
+            
+        Returns:
+            Embedding array or None if not found
+        """
+        if self.is_lmdb:
+            with self.env.begin(write=False) as txn:
+                # Try full key first (LMDB might store full HDF5-style keys)
+                key_bytes = key.encode('utf-8')
+                value = txn.get(key_bytes)
+                
+                # If not found, try normalized HDF5 key format
+                if value is None:
+                    normalized_key = normalize_h5_key(key)
+                    key_bytes = normalized_key.encode('utf-8')
+                    value = txn.get(key_bytes)
+                
+                # If still not found, try domain ID extraction
+                if value is None:
+                    try:
+                        domain_id = extract_domain_id(key)
+                        key_bytes = domain_id.encode('utf-8')
+                        value = txn.get(key_bytes)
+                    except ValueError:
+                        pass
+                
+                if value is None:
+                    return None
+                
+                # Convert bytes to numpy array (float16, 1024 dims)
+                # Keep as float16 for memory efficiency; downstream code converts to float32
+                arr = np.frombuffer(value, dtype=np.float16)
+                return arr
+        else:
+            # HDF5 format
+            # Return as-is; downstream code handles dtype conversion
+            try:
+                normalized_key = normalize_h5_key(key)
+                return np.array(self.h5_file[normalized_key])
+            except KeyError:
+                # Try original key format
+                try:
+                    return np.array(self.h5_file[key])
+                except KeyError:
+                    return None
+    
+    def close(self):
+        """Close the embedding storage."""
+        if self.is_lmdb:
+            self.env.close()
+        else:
+            self.h5_file.close()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
