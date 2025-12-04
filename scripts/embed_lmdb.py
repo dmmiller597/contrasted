@@ -121,9 +121,9 @@ def get_embeddings( seq_path, emb_path, model_dir, split_char, id_field,
     
     # Calculate LMDB map size
     # 13M sequences * 1024 dims * 2 bytes (float16) = ~26GB for embeddings
-    # Add overhead for keys and LMDB structure (~50% extra to be safe)
-    estimated_size = len(seq_dict) * EMBEDDING_DIM * 2 * 2  # 2x safety factor
-    map_size = max(estimated_size, 50 * 1024 * 1024 * 1024)  # At least 50GB
+    # Add overhead for keys and LMDB structure (~4x safety factor for large datasets)
+    estimated_size = len(seq_dict) * EMBEDDING_DIM * 2 * 4  # 4x safety factor
+    map_size = max(estimated_size, 200 * 1024 * 1024 * 1024)  # At least 200GB
     
     # Create/open LMDB environment
     emb_path.mkdir(parents=True, exist_ok=True)
