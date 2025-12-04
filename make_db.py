@@ -15,53 +15,46 @@ from contrasted.faiss_utils import build_faiss_index
 logger = logging.getLogger(__name__)
 
 
-@torch.no_grad()
-def embed_sequences(
-    model: CathSupConModel,
+def load_embeddings_bulk(
     embedding_reader: EmbeddingReader,
     h5_keys: list[str],
-    device: torch.device,
-    batch_size: int = 2048,
 ) -> tuple[np.ndarray, list[str]]:
-    """Project embeddings through trained model.
-    
-    Args:
-        model: Trained CathSupConModel
-        embedding_reader: EmbeddingReader instance (HDF5 or LMDB)
-        h5_keys: List of HDF5 keys to process
-        device: Device for inference
-        batch_size: Batch size for processing
-        
-    Returns:
-        embeddings: (N, D) normalized projected embeddings (float32)
-        domain_ids: List of domain IDs
-    """
-    model.eval()
-    all_embeddings = []
+    """Load all embeddings in bulk from HDF5/LMDB."""
+    embeddings = []
     domain_ids = []
+    missing = 0
     
-    for i in tqdm(range(0, len(h5_keys), batch_size), desc="Projecting embeddings"):
-        batch_keys = h5_keys[i : i + batch_size]
-        batch_embs = []
-        
-        for h5_key in batch_keys:
-            embedding = embedding_reader.get_embedding(h5_key)
-            if embedding is None:
-                logger.warning(f"Missing embedding for key: {h5_key}")
-                continue
-            
-            batch_embs.append(torch.from_numpy(embedding).float())
-            domain_ids.append(extract_domain_id(h5_key))
-        
-        if not batch_embs:
+    for h5_key in tqdm(h5_keys, desc="Loading"):
+        emb = embedding_reader.get_embedding(h5_key)
+        if emb is None:
+            missing += 1
             continue
-        
-        batch_tensor = torch.stack(batch_embs).to(device)
-        projected = model(batch_tensor)
-        all_embeddings.append(projected.cpu().numpy())
+        embeddings.append(emb)
+        domain_ids.append(extract_domain_id(h5_key))
     
-    embeddings_matrix = np.vstack(all_embeddings).astype(np.float32)
-    return embeddings_matrix, domain_ids
+    if missing > 0:
+        logger.warning(f"Missing {missing} embeddings")
+    
+    return np.vstack(embeddings).astype(np.float32), domain_ids
+
+
+@torch.no_grad()
+def project_embeddings(
+    model: CathSupConModel,
+    embeddings: np.ndarray,
+    device: torch.device,
+    batch_size: int = 4096,
+) -> np.ndarray:
+    """Project embeddings through trained model."""
+    model.eval()
+    all_projected = []
+    
+    for i in tqdm(range(0, len(embeddings), batch_size), desc="Projecting"):
+        batch = torch.from_numpy(embeddings[i:i + batch_size]).to(device)
+        projected = model(batch)
+        all_projected.append(projected.cpu().numpy())
+    
+    return np.vstack(all_projected)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="make_db")
@@ -109,9 +102,8 @@ def main(cfg: DictConfig):
     logger.info(f"Loading embeddings from: {embedding_file}")
     
     with EmbeddingReader(embedding_file) as embedding_reader:
-        embeddings_matrix, domain_ids = embed_sequences(
-            model, embedding_reader, h5_keys, device, batch_size=256
-        )
+        raw_embeddings, domain_ids = load_embeddings_bulk(embedding_reader, h5_keys)
+        embeddings_matrix = project_embeddings(model, raw_embeddings, device)
     
     # Validate embeddings
     if embeddings_matrix.size == 0:
