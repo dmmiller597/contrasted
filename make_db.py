@@ -7,30 +7,53 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import logging
+from concurrent.futures import ThreadPoolExecutor
+import h5py
 
-from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id, EmbeddingReader
+from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id, normalize_h5_key
 from contrasted.model import CathSupConModel
 from contrasted.faiss_utils import build_faiss_index
 
 logger = logging.getLogger(__name__)
 
 
-def load_embeddings_bulk(
-    embedding_reader: EmbeddingReader,
+def load_embeddings_h5(
+    h5_path: Path,
     h5_keys: list[str],
+    num_workers: int = 8,
 ) -> tuple[np.ndarray, list[str]]:
-    """Load all embeddings in bulk from HDF5/LMDB."""
+    """Load embeddings from HDF5 using parallel reads."""
+    
+    def read_chunk(chunk_keys):
+        results = []
+        with h5py.File(h5_path, 'r') as f:
+            for key in chunk_keys:
+                try:
+                    normalized = normalize_h5_key(key)
+                    emb = np.array(f[normalized])
+                    results.append((key, emb))
+                except KeyError:
+                    results.append((key, None))
+        return results
+    
+    chunk_size = max(1, len(h5_keys) // num_workers)
+    chunks = [h5_keys[i:i + chunk_size] for i in range(0, len(h5_keys), chunk_size)]
+    
+    all_results = []
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(read_chunk, chunk) for chunk in chunks]
+        for future in tqdm(futures, desc="Loading"):
+            all_results.extend(future.result())
+    
     embeddings = []
     domain_ids = []
     missing = 0
-    
-    for h5_key in tqdm(h5_keys, desc="Loading"):
-        emb = embedding_reader.get_embedding(h5_key)
+    for key, emb in all_results:
         if emb is None:
             missing += 1
             continue
         embeddings.append(emb)
-        domain_ids.append(extract_domain_id(h5_key))
+        domain_ids.append(extract_domain_id(key))
     
     if missing > 0:
         logger.warning(f"Missing {missing} embeddings")
@@ -101,9 +124,8 @@ def main(cfg: DictConfig):
     embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
     logger.info(f"Loading embeddings from: {embedding_file}")
     
-    with EmbeddingReader(embedding_file) as embedding_reader:
-        raw_embeddings, domain_ids = load_embeddings_bulk(embedding_reader, h5_keys)
-        embeddings_matrix = project_embeddings(model, raw_embeddings, device)
+    raw_embeddings, domain_ids = load_embeddings_h5(embedding_file, h5_keys)
+    embeddings_matrix = project_embeddings(model, raw_embeddings, device)
     
     # Validate embeddings
     if embeddings_matrix.size == 0:
@@ -135,4 +157,3 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-
