@@ -28,12 +28,12 @@ def load_embeddings_h5(
         results = []
         with h5py.File(h5_path, 'r') as f:
             for key in chunk_keys:
-                try:
-                    normalized = normalize_h5_key(key)
-                    emb = np.array(f[normalized])
-                    results.append((key, emb))
-                except KeyError:
-                    results.append((key, None))
+                emb = None
+                for k in [normalize_h5_key(key), key]:
+                    if k in f:
+                        emb = np.array(f[k])
+                        break
+                results.append((key, emb))
         return results
     
     chunk_size = max(1, len(h5_keys) // num_workers)
@@ -57,6 +57,9 @@ def load_embeddings_h5(
     
     if missing > 0:
         logger.warning(f"Missing {missing} embeddings")
+    
+    if not embeddings:
+        raise ValueError(f"No embeddings loaded from {h5_path}")
     
     return np.vstack(embeddings).astype(np.float32), domain_ids
 
