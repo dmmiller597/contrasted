@@ -173,57 +173,61 @@ class EmbeddingReader:
         self.h5_file = h5py.File(self.embedding_path, 'r')
         logger.info(f"Opened HDF5 file at: {self.embedding_path}")
     
-    def get_embedding(self, key: str) -> Optional[np.ndarray]:
-        """Get embedding for a given key.
+    def _fetch_from_lmdb(self, txn, key: str) -> Optional[np.ndarray]:
+        """Fetch embedding bytes from LMDB within an existing transaction."""
+        # Try full key first (LMDB might store full HDF5-style keys)
+        key_bytes = key.encode('utf-8')
+        value = txn.get(key_bytes)
         
-        Args:
-            key: HDF5 key (full format like "cath|4_4_0|12e8H01_1-113") 
-                 or domain ID (like "12e8H01")
-            
-        Returns:
-            Embedding array or None if not found
-        """
+        # If not found, try normalized HDF5 key format
+        if value is None:
+            normalized_key = normalize_h5_key(key)
+            key_bytes = normalized_key.encode('utf-8')
+            value = txn.get(key_bytes)
+        
+        # If still not found, try domain ID extraction
+        if value is None:
+            try:
+                domain_id = extract_domain_id(key)
+                key_bytes = domain_id.encode('utf-8')
+                value = txn.get(key_bytes)
+            except ValueError:
+                pass
+        
+        if value is None:
+            return None
+        
+        # Convert bytes to numpy array (float16, 1024 dims)
+        # Keep as float16 for memory efficiency; downstream code converts to float32
+        # Make writable copy to avoid PyTorch warnings
+        return np.frombuffer(value, dtype=np.float16).copy()
+
+    def get_embedding(self, key: str) -> Optional[np.ndarray]:
+        """Get embedding for a given key (opens its own LMDB transaction if needed)."""
         if self.is_lmdb:
             with self.env.begin(write=False) as txn:
-                # Try full key first (LMDB might store full HDF5-style keys)
-                key_bytes = key.encode('utf-8')
-                value = txn.get(key_bytes)
-                
-                # If not found, try normalized HDF5 key format
-                if value is None:
-                    normalized_key = normalize_h5_key(key)
-                    key_bytes = normalized_key.encode('utf-8')
-                    value = txn.get(key_bytes)
-                
-                # If still not found, try domain ID extraction
-                if value is None:
-                    try:
-                        domain_id = extract_domain_id(key)
-                        key_bytes = domain_id.encode('utf-8')
-                        value = txn.get(key_bytes)
-                    except ValueError:
-                        pass
-                
-                if value is None:
-                    return None
-                
-                # Convert bytes to numpy array (float16, 1024 dims)
-                # Keep as float16 for memory efficiency; downstream code converts to float32
-                # Make writable copy to avoid PyTorch warnings
-                arr = np.frombuffer(value, dtype=np.float16).copy()
-                return arr
-        else:
-            # HDF5 format
-            # Return as-is; downstream code handles dtype conversion
+                return self._fetch_from_lmdb(txn, key)
+        # HDF5 format
+        try:
+            normalized_key = normalize_h5_key(key)
+            return np.array(self.h5_file[normalized_key])
+        except KeyError:
             try:
-                normalized_key = normalize_h5_key(key)
-                return np.array(self.h5_file[normalized_key])
+                return np.array(self.h5_file[key])
             except KeyError:
-                # Try original key format
-                try:
-                    return np.array(self.h5_file[key])
-                except KeyError:
-                    return None
+                return None
+
+    def get_embeddings_batch(self, keys: List[str]) -> List[tuple[str, Optional[np.ndarray]]]:
+        """Batch fetch embeddings, reusing a single LMDB transaction when applicable."""
+        results: List[tuple[str, Optional[np.ndarray]]] = []
+        if self.is_lmdb:
+            with self.env.begin(write=False) as txn:
+                for key in keys:
+                    results.append((key, self._fetch_from_lmdb(txn, key)))
+        else:
+            for key in keys:
+                results.append((key, self.get_embedding(key)))
+        return results
     
     def close(self):
         """Close the embedding storage."""
