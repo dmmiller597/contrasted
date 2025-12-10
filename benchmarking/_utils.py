@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Tuple, Sequence, Optional
+from typing import Dict, List, NamedTuple, Tuple, Sequence, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from contrasted.model import CathSupConModel
 
 import numpy as np
 import torch
@@ -24,7 +27,6 @@ from sklearn.metrics import (
     homogeneity_score, completeness_score, v_measure_score
 )
 
-from contrasted.model import CathSupConModel
 from contrasted.data import CathEmbeddingDataset
 from contrasted.utils import load_labels, extract_domain_id, load_h5_keys_from_fasta
 
@@ -218,6 +220,9 @@ class ModelAndDataLoader:
         
         # Load model if checkpoint provided
         if checkpoint:
+            # Lazy import to avoid triggering huggingface_hub import issues during module load
+            from contrasted.model import CathSupConModel
+            
             self.checkpoint = Path(checkpoint).resolve()
             logger.info("Loading model...")
             self.device = get_device()

@@ -7,7 +7,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from contrasted.model import CathSupConModel
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -30,7 +33,6 @@ except ImportError as e:
     print("  Option 2 (pip): pip install --extra-index-url https://pypi.nvidia.com cuml-cu11")
 
 from benchmarking._utils import l2_normalize, get_device
-from contrasted.model import CathSupConModel
 from contrasted.utils import (
     EmbeddingReader,
     load_h5_keys_from_fasta,
@@ -240,6 +242,9 @@ def main() -> None:
     novel_clusters_path = args.output_dir / "novel_clusters.csv"
     summary_path = args.output_dir / "summary.json"
 
+    # Lazy import to avoid triggering huggingface_hub import issues during module load
+    from contrasted.model import CathSupConModel
+    
     device = get_device()
     model = CathSupConModel.load_from_checkpoint(
         str(args.checkpoint),
