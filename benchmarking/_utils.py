@@ -20,11 +20,12 @@ from tqdm import tqdm
 from scipy.stats import percentileofscore
 from dataclasses import dataclass
 from collections import Counter
-import pandas as pd
+import polars as pl
 from sklearn.cluster import DBSCAN
 from sklearn.metrics import (
     adjusted_rand_score, normalized_mutual_info_score, 
-    homogeneity_score, completeness_score, v_measure_score
+    homogeneity_score, completeness_score, v_measure_score,
+    f1_score
 )
 
 from contrasted.data import CathEmbeddingDataset
@@ -66,6 +67,164 @@ def l2_normalize(vectors: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
     return vectors / norms
+
+
+def extract_cath_levels(cath_code: str, level: str) -> str:
+    """Extract CATH hierarchy level from CATH code.
+    
+    Args:
+        cath_code: CATH code in format "C.A.T.H" (e.g., "1.10.8.10")
+        level: One of 'C', 'A', 'T', 'H'
+            - 'C': Class (first component)
+            - 'A': Architecture (first two components)
+            - 'T': Topology (first three components)
+            - 'H': Homologous superfamily (full code)
+        
+    Returns:
+        Extracted level code as string, or empty string if invalid
+        
+    Example:
+        >>> extract_cath_levels("1.10.8.10", "C")
+        '1'
+        >>> extract_cath_levels("1.10.8.10", "A")
+        '1.10'
+        >>> extract_cath_levels("1.10.8.10", "T")
+        '1.10.8'
+        >>> extract_cath_levels("1.10.8.10", "H")
+        '1.10.8.10'
+    """
+    if not cath_code or '.' not in str(cath_code):
+        return ''
+    try:
+        parts = str(cath_code).split('.')
+        if level == 'C':
+            return parts[0] if len(parts) > 0 else ''
+        elif level == 'A':
+            return '.'.join(parts[:2]) if len(parts) > 1 else ''
+        elif level == 'T':
+            return '.'.join(parts[:3]) if len(parts) > 2 else ''
+        elif level == 'H':
+            return cath_code  # Full code is homologous superfamily
+        else:
+            return ''
+    except (AttributeError, IndexError):
+        return ''
+
+
+def load_labels_dict(labels_file: Path, include_uppercase: bool = True) -> Dict[str, str]:
+    """Load domain ID -> superfamily mapping from labels file.
+    
+    Args:
+        labels_file: Path to labels file with format: domain_id superfamily
+        include_uppercase: If True, also add uppercase keys for case-insensitive lookup
+        
+    Returns:
+        Dictionary mapping domain_id -> superfamily CATH code
+    """
+    id_to_sf = {}
+    with open(labels_file, 'r') as f:
+        for line in f:
+            if not line.startswith("#"):
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    id_to_sf[parts[0]] = parts[1]
+                    if include_uppercase:
+                        id_to_sf[parts[0].upper()] = parts[1]
+    return id_to_sf
+
+
+def compute_classification_metrics(
+    df_results: pl.DataFrame,
+    method: str,
+    n_total_queries: int,
+    runtime_seconds: Optional[float] = None,
+) -> Optional[pl.DataFrame]:
+    """Compute classification metrics from results DataFrame.
+    
+    Computes accuracy at CATH hierarchy levels (C, A, T, H), balanced accuracy,
+    F1 macro score, and coverage.
+    
+    Args:
+        df_results: Polars DataFrame with columns:
+            - 'true_sf': True superfamily CATH code
+            - 'predicted_sf': Predicted superfamily CATH code
+        method: Method name (e.g., 'Foldseek', 'Contrasted', 'MMseqs2')
+        n_total_queries: Total number of queries processed (before threshold filtering)
+        runtime_seconds: Optional runtime in seconds to include in results
+        
+    Returns:
+        DataFrame with single row containing metrics, or None if no results
+    """
+    if len(df_results) == 0:
+        return None
+    
+    n_predictions = len(df_results)
+    
+    # Convert to string and handle nulls
+    df_results = df_results.with_columns([
+        pl.col('true_sf').cast(pl.Utf8).fill_null(''),
+        pl.col('predicted_sf').cast(pl.Utf8).fill_null(''),
+    ])
+    
+    # Compute matches at each CATH level
+    matches = {}
+    for level in ['C', 'A', 'T', 'H']:
+        true_levels = df_results['true_sf'].map_elements(
+            lambda x: extract_cath_levels(x, level), return_dtype=pl.Utf8
+        )
+        pred_levels = df_results['predicted_sf'].map_elements(
+            lambda x: extract_cath_levels(x, level), return_dtype=pl.Utf8
+        )
+        matches[level] = (true_levels == pred_levels) & (true_levels != '') & (pred_levels != '')
+    
+    # Compute accuracies
+    accuracies = {
+        f'accuracy_{level}': float(matches[level].sum() / n_predictions) if n_predictions > 0 else 0.0
+        for level in ['C', 'A', 'T', 'H']
+    }
+    
+    # Balanced accuracy (macro-averaged by true class)
+    true_sfs = df_results['true_sf'].value_counts()
+    balanced_acc_H = 0.0
+    if len(true_sfs) > 0:
+        for row in true_sfs.iter_rows(named=True):
+            sf = row['true_sf']
+            count = row['count']
+            sf_mask = df_results['true_sf'] == sf
+            sf_matches = (matches['H'] & sf_mask).sum()
+            balanced_acc_H += (sf_matches / count) if count > 0 else 0.0
+        balanced_acc_H /= len(true_sfs)
+    
+    # F1 macro (computed at H-level, not full CATH codes)
+    true_H = df_results['true_sf'].map_elements(
+        lambda x: extract_cath_levels(x, 'H'), return_dtype=pl.Utf8
+    ).to_numpy()
+    pred_H = df_results['predicted_sf'].map_elements(
+        lambda x: extract_cath_levels(x, 'H'), return_dtype=pl.Utf8
+    ).to_numpy()
+    valid_mask = (true_H != '') & (pred_H != '') & (pred_H != 'unknown')
+    f1_macro = f1_score(
+        true_H[valid_mask], pred_H[valid_mask], 
+        average='macro', zero_division=0.0
+    ) if valid_mask.sum() > 0 else 0.0
+    
+    coverage = n_predictions / n_total_queries if n_total_queries > 0 else 0.0
+    
+    result = {
+        'method': method,
+        'accuracy': accuracies['accuracy_H'],
+        'balanced_accuracy': balanced_acc_H,
+        'f1_macro': f1_macro,
+        'coverage': coverage,
+        **accuracies,
+        'n_queries': n_predictions,
+        'n_total_queries': n_total_queries,
+    }
+    
+    if runtime_seconds is not None:
+        result['runtime_seconds'] = runtime_seconds
+    
+    return pl.DataFrame([result])
 
 
 def filter_by_superfamily_size(dataset: DatasetSlice, min_size: int) -> Tuple[DatasetSlice, float]:
@@ -222,15 +381,30 @@ class ModelAndDataLoader:
         if checkpoint:
             # Lazy import to avoid triggering huggingface_hub import issues during module load
             from contrasted.model import CathSupConModel
+            import torch
             
             self.checkpoint = Path(checkpoint).resolve()
             logger.info("Loading model...")
             self.device = get_device()
-            self.model = CathSupConModel.load_from_checkpoint(
-                str(self.checkpoint),
-                map_location=self.device,
-                strict=False,
-            )
+            
+            # Temporarily monkey-patch torch.load to disable weights_only for checkpoint loading
+            # This is safe since checkpoints are from trusted sources
+            # PyTorch 2.6+ defaults to weights_only=True which blocks omegaconf objects
+            original_load = torch.load
+            def patched_load(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return original_load(*args, **kwargs)
+            torch.load = patched_load
+            
+            try:
+                self.model = CathSupConModel.load_from_checkpoint(
+                    str(self.checkpoint),
+                    map_location=self.device,
+                    strict=False,
+                )
+            finally:
+                # Restore original torch.load
+                torch.load = original_load
             self.model.eval()
             logger.info(f"Model loaded on {self.device}")
         else:
@@ -640,7 +814,7 @@ def compute_unseen_superfamily_analysis(
     labels_train: np.ndarray,
     superfamily_names_train: Dict[int, str],
     min_size: int = 2,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Analyze unseen superfamilies compared to training superfamilies."""
     logger.info("Computing unseen superfamily analysis...")
     
@@ -658,7 +832,7 @@ def compute_unseen_superfamily_analysis(
             }
             
     if not trained_sf_stats:
-        return pd.DataFrame()
+        return pl.DataFrame()
         
     trained_mean_radii = [s['mean_radius'] for s in trained_sf_stats.values()]
     trained_median_radius = float(np.median(trained_mean_radii))
@@ -706,4 +880,4 @@ def compute_unseen_superfamily_analysis(
             'trained_median_radius': trained_median_radius,
         })
         
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
