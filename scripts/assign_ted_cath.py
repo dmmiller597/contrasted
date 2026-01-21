@@ -8,12 +8,18 @@ Outputs TSV with TED header, CATH assignment, and cosine distance.
 import argparse
 import csv
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
 import torch
 from tqdm import tqdm
+
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from contrasted.utils import (
     EmbeddingReader,
