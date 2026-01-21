@@ -334,7 +334,11 @@ def main():
     
     # Load model
     logger.info(f"Loading model from: {args.model_ckpt}")
-    model = CathSupConModel.load_from_checkpoint(str(args.model_ckpt), strict=False)
+    model = CathSupConModel.load_from_checkpoint(
+        str(args.model_ckpt),
+        strict=False,
+        weights_only=False,
+    )
     model.eval()
     model.to(device)
     
