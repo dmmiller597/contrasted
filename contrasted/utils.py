@@ -63,14 +63,35 @@ def normalize_h5_key(h5_key: str) -> str:
 def extract_domain_id(h5_key: str) -> str:
     """Extract domain ID from HDF5 key.
     
-    Handles multiple formats:
-    - Format 1 (pipe): cath|4_4_0|12e8H01_1-113 -> 12e8H01
-    - Format 2 (underscore): cath_4_4_0_107lA00_1-162 -> 107lA00
-    - Format 3 (non-CATH): AF-A0A1A7ZDH5-F1-model_v4_TED01 -> AF-A0A1A7ZDH5-F1-model_v4_TED01 (returns as-is)
+    Handles multiple formats including multi-segment position ranges:
+    - Format 1 (pipe with slash): cath|4_4_0|2axqA02/125-248_349-387 -> 2axqA02
+    - Format 2 (pipe with underscore): cath|4_4_0|12e8H01_1-113 -> 12e8H01
+    - Format 3 (underscore): cath_4_4_0_107lA00_1-162 -> 107lA00
+    - Format 4 (non-CATH): AF-A0A1A7ZDH5-F1-model_v4_TED01 -> returns as-is
     """
     # Try pipe format first (CATH format)
     if '|' in h5_key:
-        return h5_key.split('|')[2].split('_')[0]
+        domain_part = h5_key.split('|')[2]
+        
+        # Check for slash separator (newer format): domain_id/pos1-pos2_pos3-pos4
+        if '/' in domain_part:
+            return domain_part.split('/')[0]
+        
+        # Handle underscore format: domain_id_pos1-pos2 or just domain_id
+        if '_' in domain_part:
+            parts = domain_part.split('_')
+            # Find first part that doesn't look like a position range
+            domain_id_parts = []
+            for part in parts:
+                # Position ranges contain '-' and all non-dash chars are digits
+                if '-' in part and part.replace('-', '').isdigit():
+                    break  # Stop at first position range
+                domain_id_parts.append(part)
+            if domain_id_parts:
+                return domain_id_parts[0]
+            return parts[0]
+        
+        return domain_part
     
     # Handle underscore format: cath_4_4_0_107lA00_1-162
     # Split by underscore: ['cath', '4', '4', '0', '107lA00', '1-162']
@@ -166,12 +187,17 @@ class EmbeddingReader:
             readahead=False,
             meminit=False,
         )
+        self.entries = self.env.stat().get("entries", 0)
         logger.info(f"Opened LMDB database at: {self.embedding_path}")
     
     def _init_h5(self):
         """Initialize HDF5 file handle."""
         self.h5_file = h5py.File(self.embedding_path, 'r')
+        self.entries = len(self.h5_file.keys())
         logger.info(f"Opened HDF5 file at: {self.embedding_path}")
+    
+    def __len__(self) -> int:
+        return getattr(self, "entries", 0)
     
     def _fetch_from_lmdb(self, txn, key: str) -> Optional[np.ndarray]:
         """Fetch embedding bytes from LMDB within an existing transaction."""
@@ -228,6 +254,64 @@ class EmbeddingReader:
             for key in keys:
                 results.append((key, self.get_embedding(key)))
         return results
+    
+    def iter_embeddings(
+        self,
+        keys: Optional[List[str]] = None,
+        batch_size: int = 1024,
+        to_float32: bool = False,
+    ):
+        """Yield batches of embeddings for streaming workflows.
+        
+        Args:
+            keys: Optional subset of keys to iterate. If None, iterate all keys
+                  in storage (LMDB cursor or H5 keys).
+            batch_size: Number of items per yielded batch.
+            to_float32: Convert embeddings to float32 before yielding.
+        Yields:
+            List of (key, embedding or None) pairs.
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
+        
+        if self.is_lmdb:
+            # Full scan over LMDB
+            if keys is None:
+                with self.env.begin(write=False) as txn:
+                    cursor = txn.cursor()
+                    batch = []
+                    for key_bytes, value in cursor:
+                        emb = np.frombuffer(value, dtype=np.float16).copy()
+                        if to_float32:
+                            emb = emb.astype(np.float32, copy=False)
+                        batch.append((key_bytes.decode("utf-8"), emb))
+                        if len(batch) >= batch_size:
+                            yield batch
+                            batch = []
+                    if batch:
+                        yield batch
+            else:
+                for i in range(0, len(keys), batch_size):
+                    chunk_keys = keys[i : i + batch_size]
+                    batch = []
+                    with self.env.begin(write=False) as txn:
+                        for key in chunk_keys:
+                            emb = self._fetch_from_lmdb(txn, key)
+                            if emb is not None and to_float32:
+                                emb = emb.astype(np.float32, copy=False)
+                            batch.append((key, emb))
+                    yield batch
+        else:
+            # H5 iteration
+            h5_keys = list(self.h5_file.keys()) if keys is None else keys
+            for i in range(0, len(h5_keys), batch_size):
+                batch = []
+                for key in h5_keys[i : i + batch_size]:
+                    emb = self.get_embedding(key)
+                    if emb is not None and to_float32:
+                        emb = emb.astype(np.float32, copy=False)
+                    batch.append((key, emb))
+                yield batch
     
     def close(self):
         """Close the embedding storage."""

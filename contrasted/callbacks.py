@@ -148,6 +148,7 @@ class KNNEvaluationCallback(L.Callback):
         
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="y_pred contains classes not in y_true")
+            warnings.filterwarnings("ignore", message=".*number of unique classes is greater than 50% of the number of samples.*")
             metrics = {
                 "accuracy": float(accuracy_score(query_labs, nearest_labels)),
                 "balanced_accuracy": float(balanced_accuracy_score(query_labs, nearest_labels)),
