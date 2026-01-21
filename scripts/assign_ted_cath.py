@@ -9,6 +9,7 @@ import argparse
 import csv
 import logging
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -42,6 +43,7 @@ def project_embeddings(
     embeddings: np.ndarray,
     device: torch.device,
     batch_size: int = 4096,
+    use_amp: bool = False,
 ) -> np.ndarray:
     """Project embeddings through trained model and L2-normalize.
     
@@ -57,12 +59,18 @@ def project_embeddings(
     model.eval()
     all_projected = []
     
+    autocast_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if use_amp and device.type == "cuda"
+        else nullcontext()
+    )
     for i in tqdm(range(0, len(embeddings), batch_size), desc="Projecting embeddings"):
         batch = torch.from_numpy(embeddings[i:i + batch_size]).to(device)
-        projected = model(batch)
-        # Model already L2-normalizes, but ensure it
-        projected = torch.nn.functional.normalize(projected, p=2, dim=1)
-        all_projected.append(projected.cpu().numpy())
+        with autocast_ctx:
+            projected = model(batch)
+            # Model already L2-normalizes, but ensure it
+            projected = torch.nn.functional.normalize(projected, p=2, dim=1)
+        all_projected.append(projected.float().cpu().numpy())
     
     return np.vstack(all_projected)
 
@@ -72,6 +80,7 @@ def load_cath_embeddings_and_build_index(
     model: CathSupConModel,
     device: torch.device,
     batch_size: int = 4096,
+    use_amp: bool = False,
 ) -> Tuple[np.ndarray, list[str]]:
     """Load CATH embeddings, project through model, and return projected embeddings + domain IDs.
     
@@ -127,7 +136,13 @@ def load_cath_embeddings_and_build_index(
     
     # Project through model
     logger.info("Projecting CATH embeddings through model...")
-    projected_embeddings = project_embeddings(model, embeddings_matrix, device, batch_size)
+    projected_embeddings = project_embeddings(
+        model,
+        embeddings_matrix,
+        device,
+        batch_size,
+        use_amp=use_amp,
+    )
     
     return projected_embeddings, domain_ids
 
@@ -178,6 +193,7 @@ def assign_ted_sequences(
     device: torch.device,
     output_path: Path,
     batch_size: int = 2048,
+    use_amp: bool = False,
 ) -> None:
     """Assign CATH superfamilies to TED sequences using nearest neighbor search.
     
@@ -230,10 +246,15 @@ def assign_ted_sequences(
                     
                     # Project through model
                     batch_tensor = torch.from_numpy(embeddings_array).to(device)
-                    with torch.no_grad():
+                    autocast_ctx = (
+                        torch.autocast(device_type="cuda", dtype=torch.float16)
+                        if use_amp and device.type == "cuda"
+                        else nullcontext()
+                    )
+                    with torch.no_grad(), autocast_ctx:
                         projected = model(batch_tensor)
                         projected = torch.nn.functional.normalize(projected, p=2, dim=1)
-                        query_vectors = projected.cpu().numpy().astype(np.float32)
+                        query_vectors = projected.float().cpu().numpy().astype(np.float32)
                     
                     # Search FAISS index (k=1 for nearest neighbor)
                     similarities, indices = search_faiss_index(faiss_index, query_vectors, k=1)
@@ -298,7 +319,12 @@ def main():
         "--batch-size",
         type=int,
         default=2048,
-        help="Batch size for processing (default: 2048)"
+        help="Batch size for projection/search (default: 2048)"
+    )
+    parser.add_argument(
+        "--use-amp",
+        action="store_true",
+        help="Use CUDA autocast (fp16) for faster projection on GPU"
     )
     parser.add_argument(
         "--device",
@@ -344,7 +370,11 @@ def main():
     
     # Load CATH embeddings and build FAISS index
     cath_embeddings, cath_domain_ids = load_cath_embeddings_and_build_index(
-        args.cath_h5, model, device, args.batch_size
+        args.cath_h5,
+        model,
+        device,
+        args.batch_size,
+        use_amp=args.use_amp,
     )
     
     logger.info("Building FAISS index...")
@@ -365,6 +395,7 @@ def main():
         device,
         args.output,
         args.batch_size,
+        use_amp=args.use_amp,
     )
     
     logger.info(f"✓ Assignment complete! Results saved to: {args.output}")
