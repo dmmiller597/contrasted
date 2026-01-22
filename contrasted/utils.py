@@ -199,6 +199,23 @@ class EmbeddingReader:
     def __len__(self) -> int:
         return getattr(self, "entries", 0)
     
+    def _decode_lmdb_value(self, value: bytes, key: str) -> Optional[np.ndarray]:
+        """Decode LMDB value bytes into an embedding array."""
+        if key.startswith("__"):
+            return None
+        if len(value) % np.dtype(np.float16).itemsize != 0:
+            logger.warning(
+                "Skipping LMDB entry with invalid byte size for key %s: %d bytes",
+                key,
+                len(value),
+            )
+            return None
+        emb = np.frombuffer(value, dtype=np.float16)
+        if emb.size == 0:
+            logger.warning("Skipping LMDB entry with empty embedding for key %s", key)
+            return None
+        return emb.copy()
+
     def _fetch_from_lmdb(self, txn, key: str) -> Optional[np.ndarray]:
         """Fetch embedding bytes from LMDB within an existing transaction."""
         # Try full key first (LMDB might store full HDF5-style keys)
@@ -226,7 +243,7 @@ class EmbeddingReader:
         # Convert bytes to numpy array (float16, 1024 dims)
         # Keep as float16 for memory efficiency; downstream code converts to float32
         # Make writable copy to avoid PyTorch warnings
-        return np.frombuffer(value, dtype=np.float16).copy()
+        return self._decode_lmdb_value(value, key)
 
     def get_embedding(self, key: str) -> Optional[np.ndarray]:
         """Get embedding for a given key (opens its own LMDB transaction if needed)."""
@@ -280,11 +297,25 @@ class EmbeddingReader:
                 with self.env.begin(write=False) as txn:
                     cursor = txn.cursor()
                     batch = []
+                    invalid = 0
                     for key_bytes, value in cursor:
-                        emb = np.frombuffer(value, dtype=np.float16).copy()
+                        key = key_bytes.decode("utf-8")
+                        if key.startswith("__"):
+                            continue
+                        emb = self._decode_lmdb_value(value, key)
+                        if emb is None:
+                            invalid += 1
+                            if invalid <= 5 or invalid % 1000 == 0:
+                                logger.warning(
+                                    "Skipping invalid LMDB entry for key %s "
+                                    "(count=%d)",
+                                    key,
+                                    invalid,
+                                )
+                            continue
                         if to_float32:
                             emb = emb.astype(np.float32, copy=False)
-                        batch.append((key_bytes.decode("utf-8"), emb))
+                        batch.append((key, emb))
                         if len(batch) >= batch_size:
                             yield batch
                             batch = []

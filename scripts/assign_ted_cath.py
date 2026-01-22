@@ -7,12 +7,15 @@ Outputs TSV with TED header, CATH assignment, and cosine distance.
 
 import argparse
 import csv
+import json
 import logging
 import sys
+from datetime import datetime, timezone
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
+import lmdb
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -194,6 +197,9 @@ def assign_ted_sequences(
     output_path: Path,
     batch_size: int = 2048,
     use_amp: bool = False,
+    projected_lmdb_path: Optional[Path] = None,
+    projected_map_size_gb: float = 80.0,
+    projected_overwrite: bool = False,
 ) -> None:
     """Assign CATH superfamilies to TED sequences using nearest neighbor search.
     
@@ -208,6 +214,29 @@ def assign_ted_sequences(
         batch_size: Batch size for processing
     """
     logger.info(f"Processing TED embeddings from: {ted_lmdb_path}")
+    
+    projected_env = None
+    if projected_lmdb_path is not None:
+        projected_lmdb_path.mkdir(parents=True, exist_ok=True)
+        map_size = int(projected_map_size_gb * 1024 * 1024 * 1024)
+        projected_env = lmdb.open(
+            str(projected_lmdb_path),
+            map_size=map_size,
+            subdir=True,
+            readonly=False,
+            meminit=False,
+            map_async=True,
+        )
+        meta = {
+            "source": str(ted_lmdb_path),
+            "embedding_dim": int(model.projection_dim),
+            "dtype": "float16",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "note": "Projected embeddings from CathSupConModel",
+        }
+        with projected_env.begin(write=True) as txn:
+            if projected_overwrite or txn.get(b"__meta__") is None:
+                txn.put(b"__meta__", json.dumps(meta).encode("utf-8"))
     
     with EmbeddingReader(ted_lmdb_path) as reader:
         total_entries = len(reader)
@@ -256,6 +285,12 @@ def assign_ted_sequences(
                         projected = torch.nn.functional.normalize(projected, p=2, dim=1)
                         query_vectors = projected.float().cpu().numpy().astype(np.float32)
                     
+                    if projected_env is not None:
+                        with projected_env.begin(write=True) as txn:
+                            for key, vec in zip(batch_keys, query_vectors):
+                                value = vec.astype(np.float16, copy=False).tobytes()
+                                txn.put(key.encode("utf-8"), value, overwrite=projected_overwrite)
+                    
                     # Search FAISS index (k=1 for nearest neighbor)
                     similarities, indices = search_faiss_index(faiss_index, query_vectors, k=1)
                     distances = 1.0 - similarities  # Convert similarity to cosine distance
@@ -279,6 +314,10 @@ def assign_ted_sequences(
         logger.info(f"Processed {processed} TED embeddings")
         if missing > 0:
             logger.warning(f"Missing {missing} TED embeddings")
+    
+    if projected_env is not None:
+        projected_env.sync()
+        projected_env.close()
 
 
 def main():
@@ -320,6 +359,23 @@ def main():
         type=int,
         default=2048,
         help="Batch size for projection/search (default: 2048)"
+    )
+    parser.add_argument(
+        "--projected-lmdb",
+        type=Path,
+        default=None,
+        help="Optional LMDB directory to store projected TED embeddings"
+    )
+    parser.add_argument(
+        "--projected-map-size-gb",
+        type=float,
+        default=80.0,
+        help="LMDB map size for projected embeddings (default: 80 GB)"
+    )
+    parser.add_argument(
+        "--projected-overwrite",
+        action="store_true",
+        help="Overwrite existing projected embeddings if key exists"
     )
     parser.add_argument(
         "--use-amp",
@@ -396,6 +452,9 @@ def main():
         args.output,
         args.batch_size,
         use_amp=args.use_amp,
+        projected_lmdb_path=args.projected_lmdb,
+        projected_map_size_gb=args.projected_map_size_gb,
+        projected_overwrite=args.projected_overwrite,
     )
     
     logger.info(f"✓ Assignment complete! Results saved to: {args.output}")
