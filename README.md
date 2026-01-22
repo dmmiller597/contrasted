@@ -1,5 +1,4 @@
 # Contrasted
-![Uploading Generated Image January 22, 2026 - 3_54PM.png…]()
 
 **Supervised contrastive learning for CATH protein superfamily classification**
 
