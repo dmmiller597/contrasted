@@ -1,138 +1,123 @@
 # Contrasted
 
-**Supervised contrastive learning for CATH protein superfamily classification**
 
-This project trains a projection head using contrastive learning to create high-quality protein embeddings for superfamily classification. The learned embeddings can be used for fast k-NN annotation of new sequences.
+Supervised contrastive learning for CATH protein superfamily classification.
 
-## Overview
-
-The pipeline consists of three main stages:
-
-1. **Training** (`train.py`): Train a projection head using supervised contrastive learning
-2. **Database Creation** (`make_db.py`): Create a FAISS vector database from trained embeddings
-3. **Annotation** (`annotate.py`): Annotate new sequences using k-NN search
+Train a projection head on ProstT5 embeddings using contrastive learning for fast k-NN annotation.
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/dmmiller597/contrasted
 cd contrasted
-
-# Install dependencies
-pip install -e .
-
+uv sync
 ```
+
+Optional embeddings dependencies:
+```bash
+uv sync --extra embed
+```
+
+<details>
+<summary><strong>Without uv</strong></summary>
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+With optional embeddings extras:
+```bash
+python -m pip install -e ".[embed]"
+```
+
+</details>
 
 ## Quick Start
 
-### 1. Train a Model
+### Train
+```bash
+uv run python train.py
+```
 
-Train a contrastive learning model on CATH protein embeddings:
+Configuration example:
+```bash
+uv run python train.py model.loss_type=supcon data.batch_size=512
+```
+
+<details>
+<summary><strong>Without uv</strong></summary>
 
 ```bash
 python train.py
+python train.py model.loss_type=supcon data.batch_size=512
 ```
 
-This will:
-- Load pre-computed ProstT5 embeddings (1024-dim)
-- Train a projection head to 128-dim using supervised contrastive loss
-- Evaluate using k-NN classification
+</details>
 
-**Configuration**: Edit `configs/train.yaml` or override via command line:
-
+### Build vector database
 ```bash
-# Use proxy-anchor loss instead of supcon
-python train.py experiment=proxy_anchor
-
-# Override specific parameters
-python train.py data.batch_size=512 trainer.max_epochs=50
-```
-
-### 2. Create Vector Database
-
-After training, create a FAISS index for fast similarity search:
-
-```bash
-python make_db.py \
-    model_path=outputs/2025-10-15/21-26-35/checkpoints/best.ckpt \
+uv run python make_db.py \
+    model_path=outputs/checkpoints/epoch=108.ckpt \
     index_path=data/vector_db/train.index
 ```
 
-This will:
-- Load the trained model
-- Project training embeddings through the model
-- Build a FAISS index (inner product for cosine similarity)
-- Save index and domain IDs to `data/vector_db/`
+<details>
+<summary><strong>Without uv</strong></summary>
 
-**Configuration**: Edit `configs/make_db.yaml` or override via command line.
+```bash
+python make_db.py \
+    model_path=outputs/checkpoints/epoch=108.ckpt \
+    index_path=data/vector_db/train.index
+```
 
-### 3. Annotate New Sequences
+</details>
 
-Annotate test sequences using k-NN search:
+### Annotate sequences
+```bash
+uv run python annotate.py \
+    model_path=outputs/checkpoints/epoch=108.ckpt \
+    index=data/vector_db/train.index \
+    input=data/clustered_datasets/test/s30.fasta
+```
+
+<details>
+<summary><strong>Without uv</strong></summary>
 
 ```bash
 python annotate.py \
-    model_path=outputs/2025-10-15/21-26-35/checkpoints/best.ckpt \
+    model_path=outputs/checkpoints/epoch=108.ckpt \
     index=data/vector_db/train.index \
-    output_path=outputs/annotations/test_annotations.tsv
+    input=data/clustered_datasets/test/s30.fasta
 ```
 
-This will:
-- Load the trained model and FAISS index
-- Project query embeddings through the model
-- Find k-nearest neighbors for each query
-- Transfer annotations via majority vote
-- Save results with confidence scores
-
-**Configuration**: Edit `configs/annotate.yaml` or override via command line.
+</details>
 
 ## Data Format
 
-### Input Files
+Inputs:
+- FASTA: `>cath|{version}|{domain_id}/{start}-{end}`
+- Embeddings: `.pt` with keys `embeddings`, `labels`, `ids`, `idx_to_label`
 
-- **FASTA files**: Protein sequences in FASTA format
-  ```
-  >cath|4_4_0|12e8H01/1-113
-  MKKYTCTVCGYIYNPEDGDPDNGVNPGTDFKDIPDDWVCPLCGVGKDQFEEVEE
-  ```
+Outputs:
+- Annotations TSV: `query_id`, `predicted_annotation`, `distance`, `confidence`
 
-- **HDF5 embeddings**: Pre-computed ProstT5 embeddings (1024-dim)
-  - Keys: `cath|4_4_0|12e8H01_1-113` (note: `/` replaced with `_`)
-  - Values: numpy arrays of shape `(1024,)`
+## Development
 
-- **Label file**: Domain ID to superfamily mapping (TSV)
-  ```
-  12e8H01    1.10.8.10
-  12gsA00    3.40.50.720
-  ```
-
-### Output Files
-
-- **Annotations** (`annotate.py`): TSV file with columns:
-  - `query_id`: Query domain ID
-  - `predicted_annotation`: Predicted superfamily
-  - `distance`: Cosine distance to nearest neighbor (optional)
-  - `confidence`: Confidence score [0, 1] (optional)
-
-## Project Structure
-
+```bash
+uv sync --extra dev
+uv run ruff check --fix . && uv run ruff format .
+uv run pytest
 ```
-contrasted/
-├── contrasted/           # Core package
-│   ├── data.py          # Data loading and preprocessing
-│   ├── model.py         # Model architecture
-│   ├── losses.py        # Contrastive loss functions
-│   ├── callbacks.py     # Training callbacks (k-NN evaluation)
-│   └── utils.py         # Utility functions
-├── configs/             # Hydra configuration files
-│   ├── train.yaml       # Training configuration
-│   ├── make_db.yaml     # Database creation configuration
-│   ├── annotate.yaml    # Annotation configuration
-│   └── experiment/      # Experiment-specific configs
-├── scripts/             # Helper scripts
-│   └── embed.py         # Generate ProstT5 embeddings
-├── train.py             # Training script
-├── make_db.py           # Database creation script
-└── annotate.py          # Annotation script
+
+<details>
+<summary><strong>Without uv</strong></summary>
+
+```bash
+python -m pip install -e ".[dev]"
+ruff check --fix . && ruff format .
+pytest
 ```
+
+</details>
