@@ -1,110 +1,59 @@
 defaults:
   - _self_
-  - experiment: supcon
 
 seed: 42
 
-# Data Configuration
-paths:
-  train_fasta: data/clustered-datasets/train.fasta
+datamodule:
+  _target_: contrasted.data.EmbeddingDataModule
+  train_fasta: data/clustered-datasets/train_excl_holdouts66.fasta
   val_fasta: data/clustered-datasets/val.fasta
   test_fasta: data/clustered-datasets/test/s30.fasta
-  embedding_file: data/cath-domain-seqs-S100.h5
-  label_file: data/cath-domain-sf-list.txt
-
-data:
+  embedding_file: data/cath-c123-S100.pt
   batch_size: 1024
   num_workers: 4
-  pin_memory: true
 
-datamodule:
-  _target_: contrasted.data.CathDataModule
-  train_fasta: ${paths.train_fasta}
-  val_fasta: ${paths.val_fasta}
-  test_fasta: ${paths.test_fasta}
-  label_file: ${paths.label_file}
-  embedding_file: ${paths.embedding_file}
-  batch_size: ${data.batch_size}
-  num_workers: ${data.num_workers}
-  pin_memory: ${data.pin_memory}
-
-# Model Configuration
 model:
-  _target_: contrasted.model.CathSupConModel
-  _recursive_: false
-  num_classes: null
-  input_dim: 1024
-  proj_hidden_dims: [1024]
-  proj_output_dim: 128
-  dropout: 0.2
+  _target_: contrasted.model.ContrastiveModel
+  hidden_dim: 512
+  output_dim: 128
   loss_type: proxy_anchor
   loss_params:
-    temperature: 0.07
+    margin: 0.1
     alpha: 32
-    margin: 0.2
-  learning_rate: ${learning.lr}
-  weight_decay: ${learning.weight_decay}
-  epochs: ${trainer.max_epochs}
-  num_warmup_epochs: ${learning.num_warmup_epochs}
-  min_lr: ${learning.eta_min}
-  eps: 1e-8
-  betas: [0.9, 0.999]
+  learning_rate: 1e-3
+  weight_decay: 1e-4
+  max_epochs: ${trainer.max_epochs}
+  warmup_epochs: 10
 
-# Optimization Configuration
-learning:
-  lr: 0.001
-  weight_decay: 0.0001
-  num_warmup_epochs: 20
-  eta_min: 0.000001
-
-# Training Configuration
 trainer:
-  max_epochs: 1000
+  max_epochs: 200
   accelerator: auto
   devices: auto
   precision: 16-mixed
   gradient_clip_val: 1.0
   deterministic: true
-  log_every_n_steps: 10
-  val_check_interval: 1.0
-  enable_progress_bar: true
-  enable_model_summary: true
   default_root_dir: ${hydra:run.dir}
 
-# Logging & Callbacks
-logging:
-  logger:
-    _target_: lightning.pytorch.loggers.WandbLogger
-    project: contrasted
-    entity: dmmiller597
-    name: null
-    offline: false
-    save_dir: ${hydra:run.dir}/wandb
-  callbacks:
-    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
-      monitor: val/loss
-      mode: min
-      save_top_k: 1
-      dirpath: ${hydra:run.dir}/checkpoints
-    - _target_: lightning.pytorch.callbacks.EarlyStopping
-      monitor: val/loss
-      mode: min
-      patience: 15
-      min_delta: 0.0001
-    - _target_: lightning.pytorch.callbacks.LearningRateMonitor
-      logging_interval: step
-    - _target_: contrasted.callbacks.KNNEvaluationCallback
-      eval_every_n_epochs: 1
+logger:
+  _target_: lightning.pytorch.loggers.WandbLogger
+  project: contrasted
+  entity: dmmiller597
+  save_dir: ${hydra:run.dir}/wandb
 
-# Execution
-run:
-  do_test_after_fit: true
-  test_ckpt_path: best
+callbacks:
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/loss
+    mode: min
+    save_top_k: 1
+    dirpath: ${hydra:run.dir}/checkpoints
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val/loss
+    patience: 15
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  - _target_: contrasted.callbacks.KNNEvaluationCallback
 
-# Hydra
 hydra:
   run:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
   job:
-    name: ${hydra:runtime.choices.experiment}
     chdir: false
