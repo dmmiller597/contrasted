@@ -1,5 +1,8 @@
-input: data/clustered-datasets/train_excl_holdouts.fasta # the input sequences we wish to make our database from
-model_path: checkpoints/holdouts50.ckpt  # the model we want to use to embed our sequences
-index_path: data/vector_db/train.index  # the path we want to save our vector index to
-embedding_file: data/cath-domain-seqs-S100.h5  # HDF5 file with pre-computed embeddings
-ids: null # if we only want to build our index from a subset of input [OPTIONAL]
+input: data/clustered-datasets/train_excl_holdouts66.fasta
+model_path: checkpoints/holdouts66.ckpt
+index_path: data/vector_db/train.pt
+embedding_file: data/cath-c123-S100.pt
+ids: null
+label_file: null
+project_batch_size: 4096
+dtype: float16
