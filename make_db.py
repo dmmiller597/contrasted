@@ -1,161 +1,142 @@
-"""Create a FAISS vector database from trained model embeddings."""
+"""Create a vector database from trained model embeddings."""
+
+import logging
+from pathlib import Path
 
 import hydra
-from omegaconf import DictConfig
 import torch
-import numpy as np
-from pathlib import Path
+from omegaconf import DictConfig
 from tqdm import tqdm
-import logging
-from concurrent.futures import ThreadPoolExecutor
-import h5py
 
-from contrasted.utils import load_h5_keys_from_fasta, extract_domain_id, normalize_h5_key
-from contrasted.model import CathSupConModel
-from contrasted.faiss_utils import build_faiss_index
+from contrasted.data import load_domain_ids_from_fasta
+from contrasted.model import ContrastiveModel
+from contrasted.search import VectorIndex
+from contrasted.utils import load_labels
 
 logger = logging.getLogger(__name__)
 
 
-def load_embeddings_h5(
-    h5_path: Path,
-    h5_keys: list[str],
-    num_workers: int = 8,
-) -> tuple[np.ndarray, list[str]]:
-    """Load embeddings from HDF5 using parallel reads."""
-    
-    def read_chunk(chunk_keys):
-        results = []
-        with h5py.File(h5_path, 'r') as f:
-            for key in chunk_keys:
-                emb = None
-                for k in [normalize_h5_key(key), key]:
-                    if k in f:
-                        emb = np.array(f[k])
-                        break
-                results.append((key, emb))
-        return results
-    
-    chunk_size = max(1, len(h5_keys) // num_workers)
-    chunks = [h5_keys[i:i + chunk_size] for i in range(0, len(h5_keys), chunk_size)]
-    
-    all_results = []
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(read_chunk, chunk) for chunk in chunks]
-        for future in tqdm(futures, desc="Loading"):
-            all_results.extend(future.result())
-    
-    embeddings = []
-    domain_ids = []
+def load_embeddings_pt(
+    pt_path: Path,
+    domain_ids: list[str],
+) -> tuple[torch.Tensor, list[str]]:
+    """Load embeddings from .pt file for specified domain IDs."""
+    logger.info(f"Loading embeddings from: {pt_path}")
+
+    data = torch.load(pt_path, map_location="cpu", weights_only=False)
+    embeddings = data["embeddings"].float()
+    ids = data["ids"]
+
+    id_to_idx = {id_: i for i, id_ in enumerate(ids)}
+
+    found_indices: list[int] = []
+    found_ids = []
     missing = 0
-    for key, emb in all_results:
-        if emb is None:
+
+    for domain_id in domain_ids:
+        if domain_id in id_to_idx:
+            idx = id_to_idx[domain_id]
+            found_indices.append(idx)
+            found_ids.append(domain_id)
+        else:
             missing += 1
-            continue
-        embeddings.append(emb)
-        domain_ids.append(extract_domain_id(key))
-    
+
     if missing > 0:
         logger.warning(f"Missing {missing} embeddings")
-    
-    if not embeddings:
-        raise ValueError(f"No embeddings loaded from {h5_path}")
-    
-    return np.vstack(embeddings).astype(np.float32), domain_ids
+
+    if not found_indices:
+        raise ValueError(f"No embeddings found in {pt_path}")
+
+    return embeddings[found_indices], found_ids
 
 
 @torch.no_grad()
 def project_embeddings(
-    model: CathSupConModel,
-    embeddings: np.ndarray,
+    model: ContrastiveModel,
+    embeddings: torch.Tensor,
     device: torch.device,
     batch_size: int = 4096,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Project embeddings through trained model."""
     model.eval()
-    all_projected = []
-    
+    projected = []
+
     for i in tqdm(range(0, len(embeddings), batch_size), desc="Projecting"):
-        batch = torch.from_numpy(embeddings[i:i + batch_size]).to(device)
-        projected = model(batch)
-        all_projected.append(projected.cpu().numpy())
-    
-    return np.vstack(all_projected)
+        batch = embeddings[i : i + batch_size].to(device)
+        proj = model(batch).cpu()
+        projected.append(proj)
+
+    return torch.cat(projected, dim=0)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="make_db")
 def main(cfg: DictConfig):
-    """Create FAISS index from trained model embeddings."""
-    
-    # Setup device with auto-detection
+    """Create vector index from trained model embeddings."""
     if torch.cuda.is_available():
-        device = torch.device('cuda')
+        device = torch.device("cuda")
     elif torch.backends.mps.is_available():
-        device = torch.device('mps')
+        device = torch.device("mps")
     else:
-        device = torch.device('cpu')
+        device = torch.device("cpu")
     logger.info(f"Using device: {device}")
-    
-    # Validate inputs
+
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
-    
+
     if not input_path.exists():
         raise FileNotFoundError(f"Input FASTA not found: {input_path}")
     if not model_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
-    
-    # Load model
+
     logger.info(f"Loading model from: {model_path}")
-    model = CathSupConModel.load_from_checkpoint(str(model_path), strict=False)
+    model = ContrastiveModel.load_from_checkpoint(
+        str(model_path), strict=False, weights_only=False
+    )
     model.eval()
     model.to(device)
-    
-    # Load FASTA and get HDF5 keys
+
     logger.info(f"Loading sequences from: {input_path}")
-    h5_keys = load_h5_keys_from_fasta(input_path)
-    
-    # Filter by IDs if specified
+    domain_ids = load_domain_ids_from_fasta(input_path)
+
     if cfg.ids:
         ids_set = set(cfg.ids)
-        h5_keys = [k for k in h5_keys if extract_domain_id(k) in ids_set]
-        logger.info(f"Filtered to {len(h5_keys)} sequences matching provided IDs")
+        domain_ids = [d for d in domain_ids if d in ids_set]
+        logger.info(f"Filtered to {len(domain_ids)} sequences matching provided IDs")
     else:
-        logger.info(f"Processing {len(h5_keys)} sequences")
-    
-    # Load embeddings and project through model
-    embedding_file = Path(cfg.get("embedding_file", "data/cath-domain-seqs-S100.h5"))
-    logger.info(f"Loading embeddings from: {embedding_file}")
-    
-    raw_embeddings, domain_ids = load_embeddings_h5(embedding_file, h5_keys)
-    embeddings_matrix = project_embeddings(model, raw_embeddings, device)
-    
-    # Validate embeddings
-    if embeddings_matrix.size == 0:
-        raise ValueError("No valid embeddings generated")
-    
-    logger.info(
-        f"Generated {embeddings_matrix.shape[0]} embeddings "
-        f"of dimension {embeddings_matrix.shape[1]}"
+        logger.info(f"Processing {len(domain_ids)} sequences")
+
+    embedding_file = Path(cfg.get("embedding_file", "data/cath-c123-S100.pt"))
+    raw_embeddings, domain_ids = load_embeddings_pt(embedding_file, domain_ids)
+
+    projected = project_embeddings(
+        model,
+        raw_embeddings,
+        device,
+        batch_size=cfg.get("project_batch_size", 4096),
     )
-    
-    # Build FAISS index
-    logger.info("Building FAISS index...")
-    index = build_faiss_index(embeddings_matrix)
-    
-    # Save index
+
+    logger.info(
+        f"Generated {projected.shape[0]} embeddings of dimension {projected.shape[1]}"
+    )
+
+    label_path = Path(cfg.label_file) if cfg.get("label_file") else None
+    labels = None
+    if label_path:
+        if not label_path.exists():
+            raise FileNotFoundError(f"Label file not found: {label_path}")
+        id_to_label, idx_to_label = load_labels(label_path)
+        labels = [
+            idx_to_label.get(id_to_label.get(domain_id, -1), "unknown")
+            for domain_id in domain_ids
+        ]
+        logger.info(f"Loaded labels for {len(labels)} domains")
+
+    dtype = torch.float16 if cfg.get("dtype", "float16") == "float16" else torch.float32
+    index = VectorIndex(projected, domain_ids, labels=labels, dtype=dtype)
+
     index_path = Path(cfg.index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    import faiss
-    faiss.write_index(index, str(index_path))
-    logger.info(f"Saved FAISS index to: {index_path}")
-    
-    # Save domain IDs
-    ids_path = index_path.with_suffix(".npy")
-    np.save(ids_path, np.array(domain_ids))
-    logger.info(f"Saved domain IDs to: {ids_path}")
-    
-    logger.info("✓ Database creation complete!")
+    index.save(index_path)
 
 
 if __name__ == "__main__":

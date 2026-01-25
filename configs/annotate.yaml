@@ -1,13 +1,13 @@
-input: data/t_hits_to_scan_against_hmm.fasta  # Can be single FASTA file or folder with multiple FASTA files
-k: 1 # number of nearest neighbours
-id_to_annotation: data/cath-domain-sf-list.txt # id to annotation file, to map hits to CATH SF's
-model_path: checkpoints/holdouts50.ckpt  # trained model checkpoint
-embedding_file: data/t-hits-lmdb  # HDF5 file with pre-computed embeddings
-ids: null  # the ids pertaining to the entries of our vector index (loaded automatically from .npy)
-index: data/vector_db/train.index  # faiss vector index file
-output_dir: outputs/annotations  # directory where annotations will be saved
-distance_cutoff: 1  # maximum cosine distance (1 - similarity) to consider valid
+input: data/clustered-datasets/test.fasta
+k: 1
+id_to_annotation: data/cath-domain-sf-list.txt
+model_path: checkpoints/holdouts66.ckpt
+embedding_file: data/cath-c123-S100.pt
+ids: null
+index: data/vector_db/train.pt
+output_dir: outputs/annotations
+distance_cutoff: 1
 return_distance: true
-return_confidence: false  # disable confidence column to save space
-return_true_annotation: false  # include true annotations and compute metrics when labels provided
-batch_size: 8192  # configurable batch size for annotation
+return_confidence: false
+return_true_annotation: false
+batch_size: 8192
