@@ -1,59 +1,57 @@
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "contrasted"
 version = "0.1.0"
 description = "Supervised contrastive learning for CATH protein superfamily classification"
-requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.0.0",
-    "pytorch-lightning>=2.2.0",
-    "hydra-core>=1.3.0",
-    "h5py>=3.0.0",
-    "wandb>=0.15.0",
-    "numpy>=1.20.0",
-    "omegaconf>=2.3.0",
-    "scikit-learn>=1.0.0",
-    "faiss-cpu>=1.7.0",
-    "polars>=1.0.0",
-    "tqdm>=4.60.0",
-    "lmdb>=1.0.0",
+    "torch>=2.0",
+    "lightning>=2.6",
+    "numpy>=1.20",
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "wandb>=0.15",
+    "scikit-learn>=1.0",
+    "tqdm>=4.60",
+    "polars>=1.0",
+    "pillow>=12.1.0",
+    "h5py>=3.15.1",
+    "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "ruff>=0.4.0",
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "ty",
+]
+embed = [
+    "transformers>=4.40",
+    "sentencepiece>=0.2",
 ]
 
-[tool.setuptools]
-packages = ["contrasted", "benchmarking"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/contrasted"]
 
 [tool.ruff]
-line-length = 100
-target-version = "py310"
+line-length = 88
+target-version = "py311"
+src = ["src"]
 
 [tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # Pyflakes
-    "I",      # isort (import sorting)
-    "UP",     # pyupgrade (modern Python syntax)
-    "B",      # flake8-bugbear
-    "SIM",    # flake8-simplify
-]
-ignore = [
-    "E501",   # line too long (handled by formatter)
-    "B008",   # function call in default argument (common in argparse)
-    "SIM108", # ternary operator (sometimes less readable)
-]
+select = ["E", "F", "W", "B", "I", "UP", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["contrasted", "benchmarking"]
+known-first-party = ["contrasted"]
 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
