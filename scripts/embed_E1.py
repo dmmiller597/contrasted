@@ -38,11 +38,11 @@ logger = logging.getLogger(__name__)
 
 def add_e1_to_path() -> Path:
     """Ensure the E1 source is importable."""
-    e1_root = Path(__file__).resolve().parents[1] / "tools" / "E1-main" / "src"
+    e1_root = Path(__file__).resolve().parents[1] / "tools" / "E1" / "src"
     if not e1_root.exists():
         raise FileNotFoundError(
             "E1 source not found. Expected at: "
-            f"{e1_root}. Please clone E1 into tools/E1-main."
+            f"{e1_root}. Please clone E1 into tools/E1."
         )
     sys.path.insert(0, str(e1_root))
     return e1_root
