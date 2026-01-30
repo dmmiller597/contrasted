@@ -4,33 +4,35 @@ import logging
 from pathlib import Path
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from contrasted.data import load_domain_ids_from_fasta
+from contrasted.data import (
+    load_domain_ids_from_fasta,
+    load_embedding_dir,
+    load_id_to_idx,
+)
 from contrasted.model import ContrastiveModel
-from contrasted.search import VectorIndex
-from contrasted.utils import load_labels
+from contrasted.search import FaissIndex, VectorIndex
+from contrasted.utils import get_device, load_labels
 
 logger = logging.getLogger(__name__)
 
 
-def load_embeddings_pt(
-    pt_path: Path,
+def resolve_embedding_indices(
+    embedding_dir: Path,
     domain_ids: list[str],
-) -> tuple[torch.Tensor, list[str]]:
-    """Load embeddings from .pt file for specified domain IDs."""
-    logger.info(f"Loading embeddings from: {pt_path}")
+) -> tuple[np.ndarray, list[str], list[int]]:
+    """Load embeddings from embedding dir for specified domain IDs."""
+    logger.info(f"Loading embeddings from: {embedding_dir}")
 
-    data = torch.load(pt_path, map_location="cpu", weights_only=False)
-    embeddings = data["embeddings"].float()
-    ids = data["ids"]
-
-    id_to_idx = {id_: i for i, id_ in enumerate(ids)}
+    embeddings, ids, _, _ = load_embedding_dir(embedding_dir)
+    id_to_idx = load_id_to_idx(embedding_dir, ids)
 
     found_indices: list[int] = []
-    found_ids = []
+    found_ids: list[str] = []
     missing = 0
 
     for domain_id in domain_ids:
@@ -45,15 +47,16 @@ def load_embeddings_pt(
         logger.warning(f"Missing {missing} embeddings")
 
     if not found_indices:
-        raise ValueError(f"No embeddings found in {pt_path}")
+        raise ValueError(f"No embeddings found in {embedding_dir}")
 
-    return embeddings[found_indices], found_ids
+    return embeddings, found_ids, found_indices
 
 
 @torch.no_grad()
 def project_embeddings(
     model: ContrastiveModel,
-    embeddings: torch.Tensor,
+    embeddings: np.ndarray,
+    indices: list[int],
     device: torch.device,
     batch_size: int = 4096,
 ) -> torch.Tensor:
@@ -61,8 +64,10 @@ def project_embeddings(
     model.eval()
     projected = []
 
-    for i in tqdm(range(0, len(embeddings), batch_size), desc="Projecting"):
-        batch = embeddings[i : i + batch_size].to(device)
+    for i in tqdm(range(0, len(indices), batch_size), desc="Projecting"):
+        batch_indices = indices[i : i + batch_size]
+        batch_np = np.asarray(embeddings[batch_indices])
+        batch = torch.from_numpy(batch_np).float().to(device)
         proj = model(batch).cpu()
         projected.append(proj)
 
@@ -72,12 +77,7 @@ def project_embeddings(
 @hydra.main(version_base=None, config_path="configs", config_name="make_db")
 def main(cfg: DictConfig):
     """Create vector index from trained model embeddings."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = get_device()
     logger.info(f"Using device: {device}")
 
     input_path = Path(cfg.input)
@@ -105,12 +105,16 @@ def main(cfg: DictConfig):
     else:
         logger.info(f"Processing {len(domain_ids)} sequences")
 
-    embedding_file = Path(cfg.get("embedding_file", "data/cath-c123-S100.pt"))
-    raw_embeddings, domain_ids = load_embeddings_pt(embedding_file, domain_ids)
+    embedding_dir = Path(cfg.get("embedding_dir", "data/cath-c123-S100"))
+    raw_embeddings, domain_ids, indices = resolve_embedding_indices(
+        embedding_dir,
+        domain_ids,
+    )
 
     projected = project_embeddings(
         model,
         raw_embeddings,
+        indices,
         device,
         batch_size=cfg.get("project_batch_size", 4096),
     )
@@ -132,7 +136,11 @@ def main(cfg: DictConfig):
         logger.info(f"Loaded labels for {len(labels)} domains")
 
     dtype = torch.float16 if cfg.get("dtype", "float16") == "float16" else torch.float32
-    index = VectorIndex(projected, domain_ids, labels=labels, dtype=dtype)
+    index_backend = str(cfg.get("index_backend", "faiss")).lower()
+    if index_backend == "faiss":
+        index = FaissIndex(projected, domain_ids, labels=labels)
+    else:
+        index = VectorIndex(projected, domain_ids, labels=labels, dtype=dtype)
 
     index_path = Path(cfg.index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
