@@ -1,9 +1,11 @@
-"""Data loading for protein embeddings using PyTorch .pt files."""
+"""Data loading for protein embeddings from embedding directories."""
 
+import json
 import logging
 from pathlib import Path
 
 import lightning as L
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -13,16 +15,23 @@ logger = logging.getLogger(__name__)
 def parse_fasta_header(header: str) -> str:
     """Extract domain_id from FASTA header.
 
-    Format: >cath|{cath_release}|{domain_id}/{start}-{end}
-    Returns: domain_id (e.g., '12e8H01')
+    Supported formats:
+    - CATH: >cath|{cath_release}|{domain_id}/{start}-{end}
+    - TED/AlphaFold: >AF-..._TED03
+    - Fallback: take first token after ">" (before whitespace)
     """
-    parts = header.strip().lstrip(">").split("|")
+    header = header.strip()
+    if not header.startswith(">"):
+        raise ValueError(f"Invalid FASTA header: {header}")
+
+    token = header[1:].split()[0]
+    parts = token.split("|")
     if len(parts) >= 3:
         return parts[2].split("/")[0]
-    raise ValueError(f"Invalid FASTA header: {header}")
+    return token.split("/", 1)[0]
 
 
-def load_domain_ids_from_fasta(fasta_path: Path) -> list[str]:
+def load_domain_ids_from_fasta(fasta_path: str | Path) -> list[str]:
     """Read FASTA file and return list of domain IDs."""
     domain_ids = []
     with open(fasta_path) as f:
@@ -35,8 +44,9 @@ def load_domain_ids_from_fasta(fasta_path: Path) -> list[str]:
     return domain_ids
 
 
-def resolve_fasta_paths(fasta_input: Path) -> dict[str, Path]:
+def resolve_fasta_paths(fasta_input: str | Path) -> dict[str, Path]:
     """Resolve FASTA paths - handles single file or directory."""
+    fasta_input = Path(fasta_input)
     if fasta_input.is_dir():
         fasta_files = sorted(fasta_input.glob("*.fasta")) + sorted(
             fasta_input.glob("*.fa")
@@ -52,21 +62,136 @@ def resolve_fasta_paths(fasta_input: Path) -> dict[str, Path]:
     return {}
 
 
-class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
-    """Protein embeddings from .pt file.
+def read_ids_txt(path: Path) -> list[str]:
+    """Read ids.txt with one ID per line."""
+    ids = []
+    with open(path) as f:
+        for line in f:
+            id_ = line.strip()
+            if id_:
+                ids.append(id_)
+    return ids
 
-    The .pt file contains:
-        - embeddings: Tensor[N, D] - all embeddings (float16 or float32)
-        - labels: Tensor[N] - superfamily indices
-        - ids: List[str] - domain IDs
+
+def load_id_to_idx(embedding_dir: str | Path, ids: list[str]) -> dict[str, int]:
+    """Load or build ID to index mapping for an embedding directory.
+
+    If id_to_row.npy exists, loads the mapping from there.
+    Otherwise, builds mapping from the ids list.
+    """
+    embedding_dir = Path(embedding_dir)
+    mapping_path = embedding_dir / "id_to_row.npy"
+    if mapping_path.exists():
+        mapping_obj = np.load(mapping_path, allow_pickle=True)
+        if isinstance(mapping_obj, np.ndarray) and mapping_obj.shape == ():
+            mapping_obj = mapping_obj.item()
+        if isinstance(mapping_obj, dict):
+            return {str(k): int(v) for k, v in mapping_obj.items()}
+    return {id_: i for i, id_ in enumerate(ids)}
+
+
+def read_labels_npy(path: Path) -> np.ndarray:
+    """Read labels.npy as int64."""
+    labels = np.load(path)
+    return np.asarray(labels, dtype=np.int64)
+
+
+def _load_metadata(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
+
+def _get_metadata_value(metadata: dict, keys: list[str]) -> int | str | None:
+    for key in keys:
+        if key in metadata:
+            return metadata[key]
+    return None
+
+
+def load_embedding_dir(
+    embedding_dir: str | Path,
+    *,
+    require_labels: bool = False,
+) -> tuple[np.ndarray, list[str], np.ndarray | None, dict[int, str] | None]:
+    """Load embedding directory containing embeddings.npy, ids.txt, metadata.json."""
+    embedding_dir = Path(embedding_dir)
+    embeddings_path = embedding_dir / "embeddings.npy"
+    ids_path = embedding_dir / "ids.txt"
+    metadata_path = embedding_dir / "metadata.json"
+    labels_path = embedding_dir / "labels.npy"
+
+    if not embeddings_path.exists():
+        raise FileNotFoundError(f"Missing embeddings.npy in {embedding_dir}")
+    if not ids_path.exists():
+        raise FileNotFoundError(f"Missing ids.txt in {embedding_dir}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing metadata.json in {embedding_dir}")
+
+    metadata = _load_metadata(metadata_path)
+    dim = _get_metadata_value(metadata, ["dims", "dim", "embedding_dim"])
+    count = _get_metadata_value(metadata, ["count", "num_embeddings", "n_embeddings"])
+    dtype_str = _get_metadata_value(metadata, ["dtype"])
+
+    embeddings = np.load(embeddings_path, mmap_mode="r")
+    if dtype_str is not None:
+        expected_dtype = np.dtype(dtype_str)
+        if embeddings.dtype != expected_dtype:
+            raise ValueError(
+                "embeddings.npy dtype "
+                f"{embeddings.dtype} != metadata dtype {expected_dtype}"
+            )
+    if dim is not None and embeddings.shape[1] != int(dim):
+        raise ValueError(
+            f"embeddings.npy dim {embeddings.shape[1]} != metadata dim {dim}"
+        )
+    if count is not None and embeddings.shape[0] != int(count):
+        raise ValueError(
+            f"embeddings.npy count {embeddings.shape[0]} != metadata count {count}"
+        )
+
+    ids = read_ids_txt(ids_path)
+    if len(ids) != embeddings.shape[0]:
+        raise ValueError(
+            "ids.txt has "
+            f"{len(ids)} entries but embeddings.npy has {embeddings.shape[0]}"
+        )
+
+    labels = None
+    if labels_path.exists():
+        labels = read_labels_npy(labels_path)
+        if labels.shape[0] != embeddings.shape[0]:
+            raise ValueError(
+                "labels.npy has "
+                f"{labels.shape[0]} entries but embeddings.npy has "
+                f"{embeddings.shape[0]}"
+            )
+    elif require_labels:
+        raise FileNotFoundError(f"Missing labels.npy in {embedding_dir}")
+
+    idx_to_label = metadata.get("idx_to_label")
+    if isinstance(idx_to_label, dict):
+        idx_to_label = {int(k): v for k, v in idx_to_label.items()}
+    else:
+        idx_to_label = None
+
+    return embeddings, ids, labels, idx_to_label
+
+
+class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
+    """Protein embeddings from embedding directory.
+
+    The embedding directory contains:
+        - embeddings.npy: (N, D) float16/float32
+        - labels.npy: (N,) int64
+        - ids.txt: one ID per line
 
     This dataset uses a subset defined by indices (from fasta file filtering).
     """
 
     def __init__(
         self,
-        embeddings: torch.Tensor,
-        labels: torch.Tensor,
+        embeddings: np.ndarray | torch.Tensor,
+        labels: np.ndarray | torch.Tensor,
         indices: list[int],
     ):
         self.embeddings = embeddings
@@ -78,22 +203,30 @@ class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:  # type: ignore[override]
         data_idx = self.indices[idx]
-        return self.embeddings[data_idx], self.labels[data_idx].item()  # type: ignore[return-value]
+        embedding = self.embeddings[data_idx]
+        if isinstance(embedding, np.ndarray):
+            # Copy needed for memory-mapped arrays (mmap_mode="r" returns read-only)
+            embedding = torch.from_numpy(np.array(embedding)).float()
+        label = self.labels[data_idx]
+        if isinstance(label, np.ndarray):
+            label = int(label)
+        else:
+            label = int(label.item())
+        return embedding, label
 
 
 class EmbeddingDataModule(L.LightningDataModule):
-    """Protein domain classification data using .pt files."""
+    """Protein domain classification data using embedding directories."""
 
     def __init__(
         self,
         train_fasta: str,
         val_fasta: str,
         test_fasta: str | list[str],
-        embedding_file: str,
+        embedding_dir: str,
         batch_size: int = 64,
         num_workers: int = 4,
         pin_memory: bool = True,
-        label_file: str | None = None,  # kept for config compatibility
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -104,11 +237,11 @@ class EmbeddingDataModule(L.LightningDataModule):
         self.train_fasta = Path(train_fasta)
         self.val_fasta = Path(val_fasta)
         self.test_fasta_paths = self._resolve_test_paths(test_fasta)
-        self.embedding_file = Path(embedding_file)
+        self.embedding_dir = Path(embedding_dir)
         self.pin_memory = pin_memory and not torch.backends.mps.is_available()
 
-        self.embeddings: torch.Tensor | None = None
-        self.labels: torch.Tensor | None = None
+        self.embeddings: np.ndarray | None = None
+        self.labels: np.ndarray | None = None
         self.id_to_idx: dict[str, int] | None = None
         self.idx_to_label: dict[int, str] | None = None
         self.test_datasets: dict[str, EmbeddingDataset] | None = None
@@ -124,7 +257,7 @@ class EmbeddingDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None):
         if self.embeddings is None:
-            self._load_pt_file()
+            self._load_embedding_dir()
 
         if stage in ("fit", None):
             self.train_dataset = self._create_dataset(self.train_fasta)
@@ -138,35 +271,25 @@ class EmbeddingDataModule(L.LightningDataModule):
             if self.test_datasets:
                 self.test_dataset = next(iter(self.test_datasets.values()))
 
-    def _load_pt_file(self):
-        """Load embeddings, labels, and IDs from .pt file."""
-        logger.info(f"Loading embeddings from: {self.embedding_file}")
+    def _load_embedding_dir(self):
+        """Load embeddings, labels, and IDs from embedding directory."""
+        logger.info(f"Loading embeddings from: {self.embedding_dir}")
 
-        try:
-            data = torch.load(
-                self.embedding_file,
-                map_location="cpu",
-                mmap=True,
-                weights_only=False,
-            )
-            logger.info("Loaded with memory mapping")
-        except TypeError:
-            data = torch.load(
-                self.embedding_file, map_location="cpu", weights_only=False
-            )
-            logger.info("Loaded without memory mapping (PyTorch < 2.1)")
+        embeddings, ids, labels, idx_to_label = load_embedding_dir(
+            self.embedding_dir,
+            require_labels=True,
+        )
+        assert labels is not None
 
-        self.embeddings = data["embeddings"].float()
-        self.labels = data["labels"]
-
-        ids = data["ids"]
+        self.embeddings = embeddings
+        self.labels = labels
         self.id_to_idx = {id_: i for i, id_ in enumerate(ids)}
 
-        if "idx_to_label" in data:
-            self.idx_to_label = data["idx_to_label"]
+        if idx_to_label:
+            self.idx_to_label = idx_to_label
         else:
-            unique_labels = self.labels.unique().tolist()
-            self.idx_to_label = {i: str(i) for i in unique_labels}
+            unique_labels = np.unique(labels).tolist()
+            self.idx_to_label = {int(i): str(int(i)) for i in unique_labels}
 
         logger.info(
             f"Loaded {len(ids)} embeddings, "
@@ -192,6 +315,12 @@ class EmbeddingDataModule(L.LightningDataModule):
         if missing > 0:
             logger.warning(
                 f"{fasta_path.name}: {missing}/{len(domain_ids)} domains not found"
+            )
+
+        if len(indices) == 0:
+            raise ValueError(
+                f"{fasta_path.name}: No valid samples found. "
+                f"All {len(domain_ids)} domains are missing from embedding directory."
             )
 
         logger.info(f"{fasta_path.name}: {len(indices)} samples")
@@ -220,14 +349,6 @@ class EmbeddingDataModule(L.LightningDataModule):
         if len(self.test_datasets) == 1:
             return self._dataloader(self.test_dataset)
         return [self._dataloader(ds) for ds in self.test_datasets.values()]
-
-    def get_test_dataloader(self, name: str) -> DataLoader | None:
-        if self.test_datasets and name in self.test_datasets:
-            return self._dataloader(self.test_datasets[name])
-        return None
-
-    def get_test_names(self) -> list[str]:
-        return list(self.test_fasta_paths.keys())
 
     def _dataloader(self, dataset: Dataset) -> DataLoader:
         return DataLoader(
