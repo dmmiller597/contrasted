@@ -2,6 +2,7 @@
 
 import os
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ def set_seed(seed: int = 42, deterministic: bool = True):
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def load_labels(label_path: str) -> tuple[dict[str, int], dict[int, str]]:
+def load_labels(label_path: str | Path) -> tuple[dict[str, int], dict[int, str]]:
     """Load domain labels from a two-column text file.
 
     Expected format (whitespace-delimited, comments allowed):
@@ -40,3 +41,12 @@ def load_labels(label_path: str) -> tuple[dict[str, int], dict[int, str]]:
                     id_to_sf_idx[domain_id] = sf_to_idx[superfamily]
 
     return id_to_sf_idx, {v: k for k, v in sf_to_idx.items()}
+
+
+def get_device() -> torch.device:
+    """Get the best available device (CUDA > MPS > CPU)."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
