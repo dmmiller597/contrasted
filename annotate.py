@@ -6,36 +6,39 @@ import time
 from pathlib import Path
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from contrasted.data import load_domain_ids_from_fasta, resolve_fasta_paths
+from contrasted.data import (
+    load_domain_ids_from_fasta,
+    load_embedding_dir,
+    load_id_to_idx,
+    resolve_fasta_paths,
+)
 from contrasted.model import ContrastiveModel
-from contrasted.search import VectorIndex
-from contrasted.utils import load_labels
+from contrasted.search import FaissIndex, VectorIndex
+from contrasted.utils import get_device, load_labels
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingStore:
-    """Simple embedding store using .pt file."""
+    """Simple embedding store using embedding directory."""
 
-    def __init__(self, pt_path: Path):
-        logger.info(f"Loading embeddings from: {pt_path}")
-        data = torch.load(pt_path, map_location="cpu", weights_only=False)
-        self.embeddings = data["embeddings"].float()
-        self.ids = data["ids"]
-        self.id_to_idx = {id_: i for i, id_ in enumerate(self.ids)}
+    def __init__(self, embedding_dir: Path):
+        logger.info(f"Loading embeddings from: {embedding_dir}")
+        embeddings, ids, _, _ = load_embedding_dir(embedding_dir)
+        self.embeddings = embeddings
+        self.ids = ids
+        self.id_to_idx = load_id_to_idx(embedding_dir, ids)
         logger.info(f"Loaded {len(self.ids)} embeddings")
 
-    def get(self, domain_id: str) -> torch.Tensor | None:
-        if domain_id in self.id_to_idx:
-            idx = self.id_to_idx[domain_id]
-            return self.embeddings[idx]
-        return None
-
-    def get_batch(self, domain_ids: list[str]) -> tuple[torch.Tensor, list[str], list[str]]:
+    def get_batch(
+        self,
+        domain_ids: list[str],
+    ) -> tuple[torch.Tensor, list[str], list[str]]:
         """Get embeddings for a batch of domain IDs.
 
         Returns:
@@ -55,7 +58,8 @@ class EmbeddingStore:
                 missing_ids.append(domain_id)
 
         if found_indices:
-            embeddings = self.embeddings[found_indices]
+            embeddings_np = np.asarray(self.embeddings[found_indices])
+            embeddings = torch.from_numpy(embeddings_np).float()
         else:
             embeddings = torch.empty(0, self.embeddings.shape[1])
 
@@ -112,7 +116,9 @@ def annotate_sequences(
                 }
                 if return_true_annotation:
                     true_idx = id_to_annotation.get(domain_id, -1)
-                    result["true_annotation"] = idx_to_annotation.get(true_idx, "unknown")
+                    result["true_annotation"] = idx_to_annotation.get(
+                        true_idx, "unknown"
+                    )
                 batch_results.append(result)
 
             if len(found_ids) > 0:
@@ -137,7 +143,9 @@ def annotate_sequences(
                         else:
                             ref_id = index.ids[best_idx]
                             ann_idx = id_to_annotation.get(ref_id, -1)
-                            predicted_annotation = idx_to_annotation.get(ann_idx, "unknown")
+                            predicted_annotation = idx_to_annotation.get(
+                                ann_idx, "unknown"
+                            )
                         confidence = (
                             1.0
                             if k == 1
@@ -197,18 +205,15 @@ def annotate_sequences(
 @hydra.main(version_base=None, config_path="configs", config_name="annotate")
 def main(cfg: DictConfig):
     """Annotate protein sequences using k-NN search."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = get_device()
     logger.info(f"Using device: {device}")
 
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
     index_path = Path(cfg.index)
-    annotation_path = Path(cfg.id_to_annotation) if cfg.get("id_to_annotation") else None
+    annotation_path = (
+        Path(cfg.id_to_annotation) if cfg.get("id_to_annotation") else None
+    )
 
     input_paths = resolve_fasta_paths(input_path)
     if not input_paths:
@@ -232,7 +237,11 @@ def main(cfg: DictConfig):
     model.to(device)
 
     logger.info(f"Loading vector index from: {index_path}")
-    index = VectorIndex.load(index_path, device=device)
+    index_backend = str(cfg.get("index_backend", "faiss")).lower()
+    if index_backend == "faiss":
+        index = FaissIndex.load(index_path)
+    else:
+        index = VectorIndex.load(index_path, device=device)
     logger.info(f"Loaded index with {len(index)} vectors")
 
     if annotation_path:
@@ -245,8 +254,8 @@ def main(cfg: DictConfig):
     output_dir = Path(cfg.get("output_dir", "outputs/annotations"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    embedding_file = Path(cfg.get("embedding_file", "data/cath-c123-S100.pt"))
-    store = EmbeddingStore(embedding_file)
+    embedding_dir = Path(cfg.get("embedding_dir", "data/cath-c123-S100"))
+    store = EmbeddingStore(embedding_dir)
 
     for input_name, fasta_path in input_paths.items():
         logger.info(f"Processing: {input_name} ({fasta_path})")
@@ -287,10 +296,15 @@ def main(cfg: DictConfig):
 
         logger.info(f"Saved annotations to: {output_path}")
         logger.info(f"  Total: {total}")
-        logger.info(f"  Annotated: {annotated} ({100*annotated/total:.1f}%)")
-        logger.info(f"  Unknown: {unknown} ({100*unknown/total:.1f}%)")
-        logger.info(f"  Missing: {missing}")
-        logger.info(f"  Time: {elapsed:.2f}s ({elapsed/total*1000:.2f}ms per query)")
+        if total > 0:
+            logger.info(f"  Annotated: {annotated} ({100 * annotated / total:.1f}%)")
+            logger.info(f"  Unknown: {unknown} ({100 * unknown / total:.1f}%)")
+            logger.info(f"  Missing: {missing}")
+            logger.info(
+                f"  Time: {elapsed:.2f}s ({elapsed / total * 1000:.2f}ms per query)"
+            )
+        else:
+            logger.warning("  No sequences were processed")
 
 
 if __name__ == "__main__":
