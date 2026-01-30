@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from contrasted.search import VectorIndex, normalize_numpy, search_numpy
+from contrasted.search import FaissIndex, VectorIndex, normalize_numpy
 
 
 def test_normalize_numpy():
@@ -54,12 +54,29 @@ def test_vector_index_search_chunked_matches():
     assert torch.equal(indices_full, indices_chunked)
 
 
-def test_search_numpy_padding():
-    database = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
-    queries = np.array([[1.0, 0.0]], dtype=np.float32)
+def test_faiss_index_matches_vector_index():
+    embeddings = torch.eye(3, dtype=torch.float32)
+    queries = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    vector_index = VectorIndex(embeddings, dtype=torch.float32)
+    faiss_index = FaissIndex(embeddings)
 
-    scores, indices = search_numpy(queries, database, k=3)
+    vec_scores, vec_indices = vector_index.search(queries, k=2)
+    faiss_scores, faiss_indices = faiss_index.search(queries, k=2)
 
-    assert scores.shape == (1, 3)
-    assert indices.shape == (1, 3)
-    assert indices[0, 2] == -1
+    assert faiss_indices.tolist() == vec_indices.tolist()
+    assert torch.allclose(faiss_scores, vec_scores, atol=1e-5)
+
+
+def test_faiss_index_save_load(tmp_path):
+    embeddings = torch.randn(5, 4)
+    ids = [f"id_{i}" for i in range(5)]
+    labels = [f"label_{i}" for i in range(5)]
+    index = FaissIndex(embeddings, ids=ids, labels=labels)
+
+    path = tmp_path / "faiss_index.pt"
+    index.save(path)
+    loaded = FaissIndex.load(path)
+
+    assert len(loaded) == 5
+    assert loaded.ids == ids
+    assert loaded.labels == labels
