@@ -2,10 +2,21 @@
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+
+# Workaround for OpenMP conflicts between FAISS and PyTorch on ARM Macs.
+# See: https://github.com/microsoft/LightGBM/issues/6595
+if sys.platform == "darwin" and "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+
+try:
+    import faiss
+except ImportError:
+    faiss = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -204,34 +215,110 @@ class VectorIndex:
         return index
 
 
-def search_all(
-    index: VectorIndex,
-    queries: torch.Tensor,
-    k: int,
-    *,
-    chunk_size: int | None = None,
-    normalize_queries: bool = True,
-):
-    """Yield scores and indices for large query sets."""
-    if queries.shape[0] == 0:
-        return
-    if chunk_size is None:
-        chunk_size = default_query_chunk_size(
-            index.embeddings.shape[0], index.embeddings.device, index.dtype
-        )
-    for start in range(0, queries.shape[0], chunk_size):
-        end = start + chunk_size
-        yield index.search(
-            queries[start:end],
-            k,
-            chunk_size=None,
-            normalize_queries=normalize_queries,
-        )
+class FaissIndex:
+    """FAISS-based vector index using cosine similarity (inner product)."""
 
+    def __init__(
+        self,
+        embeddings: torch.Tensor | np.ndarray,
+        ids: list[str] | None = None,
+        labels: list[str] | None = None,
+        *,
+        normalized: bool = False,
+    ):
+        if faiss is None:
+            raise ImportError("faiss-cpu is required for FaissIndex")
+        embeddings_np = self._to_numpy(embeddings)
+        if not normalized:
+            embeddings_np = normalize_numpy(embeddings_np)
+        self.index = faiss.IndexFlatIP(embeddings_np.shape[1])
+        self.index.add(embeddings_np)
+        self.ids = ids
+        self.labels = labels
 
-def normalize(embeddings: torch.Tensor) -> torch.Tensor:
-    """L2-normalize embeddings."""
-    return embeddings / embeddings.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    @staticmethod
+    def _to_numpy(embeddings: torch.Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(embeddings, torch.Tensor):
+            embeddings = embeddings.detach().cpu().numpy()
+        return np.asarray(embeddings, dtype=np.float32)
+
+    def __len__(self) -> int:
+        return int(self.index.ntotal)
+
+    @property
+    def dim(self) -> int:
+        return int(self.index.d)
+
+    def to(self, device: torch.device | str) -> "FaissIndex":
+        """No-op for API compatibility. FAISS indices run on CPU only."""
+        return self
+
+    def search(
+        self,
+        queries: torch.Tensor,
+        k: int,
+        *,
+        chunk_size: int | None = None,
+        normalize_queries: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if faiss is None:
+            raise ImportError("faiss-cpu is required for FaissIndex")
+        if queries.numel() == 0 or len(self) == 0:
+            empty_scores = torch.empty((queries.shape[0], k), dtype=torch.float32)
+            empty_indices = torch.empty((queries.shape[0], k), dtype=torch.long)
+            return empty_scores, empty_indices
+
+        queries_np = self._to_numpy(queries)
+        if normalize_queries:
+            queries_np = normalize_numpy(queries_np)
+
+        k_eff = min(k, len(self))
+        scores_np, indices_np = self.index.search(queries_np, k_eff)
+
+        if k_eff < k:
+            pad_scores = np.zeros((queries_np.shape[0], k - k_eff), dtype=np.float32)
+            pad_indices = -np.ones((queries_np.shape[0], k - k_eff), dtype=np.int64)
+            scores_np = np.concatenate([scores_np, pad_scores], axis=1)
+            indices_np = np.concatenate([indices_np, pad_indices], axis=1)
+
+        scores = torch.from_numpy(scores_np)
+        indices = torch.from_numpy(indices_np)
+        return scores, indices
+
+    def save(self, path: str | Path) -> None:
+        if faiss is None:
+            raise ImportError("faiss-cpu is required for FaissIndex")
+        path = Path(path)
+        payload = {
+            "faiss_index": faiss.serialize_index(self.index),
+            "ids": self.ids,
+            "labels": self.labels,
+            "dim": self.dim,
+        }
+        torch.save(payload, path)
+        logger.info(f"Saved FAISS index ({len(self)} vectors) to {path}")
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        device: str | torch.device = "cpu",
+    ) -> "FaissIndex":
+        """Load index from .pt file.
+
+        Note: device parameter is accepted for API compatibility with VectorIndex
+        but FAISS indices always run on CPU. Use VectorIndex for GPU acceleration.
+        """
+        if faiss is None:
+            raise ImportError("faiss-cpu is required for FaissIndex")
+        path = Path(path)
+        data = torch.load(path, map_location="cpu", weights_only=False)
+        index = faiss.deserialize_index(data["faiss_index"])
+        instance = cls.__new__(cls)
+        instance.index = index
+        instance.ids = data.get("ids")
+        instance.labels = data.get("labels")
+        return instance
 
 
 def normalize_numpy(embeddings: np.ndarray) -> np.ndarray:
@@ -240,44 +327,3 @@ def normalize_numpy(embeddings: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return embeddings / norms
-
-
-def search_numpy(
-    queries: np.ndarray,
-    database: np.ndarray,
-    k: int,
-    device: str | torch.device = "cpu",
-    dtype: torch.dtype = torch.float32,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Search normalized cosine similarity with numpy inputs."""
-    queries_np = np.asarray(queries, dtype=np.float32)
-    database_np = np.asarray(database, dtype=np.float32)
-
-    n_queries = queries_np.shape[0]
-    n_db = database_np.shape[0]
-    if n_queries == 0 or n_db == 0:
-        return (
-            np.empty((n_queries, k), dtype=np.float32),
-            np.empty((n_queries, k), dtype=np.int64),
-        )
-
-    k_eff = min(k, n_db)
-    queries_t = torch.from_numpy(queries_np).to(device=device, dtype=dtype)
-    database_t = torch.from_numpy(database_np).to(device=device, dtype=dtype)
-
-    queries_t = queries_t / queries_t.norm(dim=1, keepdim=True).clamp_min(1e-12)
-    database_t = database_t / database_t.norm(dim=1, keepdim=True).clamp_min(1e-12)
-
-    similarities = queries_t @ database_t.T
-    scores, indices = similarities.topk(k_eff, dim=1)
-
-    scores_np = scores.cpu().numpy().astype(np.float32)
-    indices_np = indices.cpu().numpy().astype(np.int64)
-
-    if k_eff < k:
-        pad_scores = np.zeros((n_queries, k - k_eff), dtype=np.float32)
-        pad_indices = -np.ones((n_queries, k - k_eff), dtype=np.int64)
-        scores_np = np.concatenate([scores_np, pad_scores], axis=1)
-        indices_np = np.concatenate([indices_np, pad_indices], axis=1)
-
-    return scores_np, indices_np
