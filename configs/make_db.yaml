@@ -1,7 +1,8 @@
 input: data/clustered-datasets/train_excl_holdouts66.fasta
 model_path: checkpoints/holdouts66.ckpt
 index_path: data/vector_db/train.pt
-embedding_file: data/cath-c123-S100.pt
+embedding_dir: data/cath-domain-seqs-S100-prostt5
+index_backend: faiss
 ids: null
 label_file: null
 project_batch_size: 4096
