@@ -5,10 +5,10 @@ seed: 42
 
 datamodule:
   _target_: contrasted.data.EmbeddingDataModule
-  train_fasta: data/clustered-datasets/train_excl_holdouts66.fasta
-  val_fasta: data/clustered-datasets/val.fasta
-  test_fasta: data/clustered-datasets/test/s30.fasta
-  embedding_dir: data/cath-domain-seqs-S100-prostt5
+  train_fasta: data/ctg_s30/ctg_s30_train.fasta
+  val_fasta: data/ctg_s30/ctg_s30_val.fasta
+  test_fasta: data/ctg_s30/ctg_s30_test.fasta
+  embedding_dir: data/ctg_S30-prostt5
   batch_size: 1024
   num_workers: 4
 
