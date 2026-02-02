@@ -1,11 +1,9 @@
 """Lightning callbacks for training evaluation."""
 
-import warnings
-
 import lightning as L
 import torch
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 from torch.utils.data import DataLoader
+from torchmetrics.functional.classification import accuracy, f1_score, recall
 
 from .search import VectorIndex
 
@@ -115,36 +113,33 @@ class KNNEvaluationCallback(L.Callback):
         query_embeddings: torch.Tensor,
         query_labels: torch.Tensor,
     ) -> dict[str, float]:
-        query_labs = query_labels.cpu().numpy()
-        train_labs = train_labels.cpu()
-
         indices = index.search(query_embeddings, k=1)[1].squeeze(1).cpu()
-        nearest_labels = train_labs[indices].numpy()
+        preds = train_labels[indices]
+        target = query_labels.cpu()
+        num_classes = int(max(preds.max(), target.max())) + 1
 
-        all_classes = sorted(set(query_labs) | set(nearest_labels))
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", message="y_pred contains classes not in y_true"
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=".*number of unique classes is greater than.*",
-            )
-            metrics = {
-                "accuracy": float(accuracy_score(query_labs, nearest_labels)),
-                "balanced_accuracy": float(
-                    balanced_accuracy_score(query_labs, nearest_labels)
-                ),
-                "macro_f1": float(
-                    f1_score(
-                        query_labs,
-                        nearest_labels,
-                        average="macro",
-                        zero_division=0,
-                        labels=all_classes,
-                    )
-                ),
-            }
+        metrics = {
+            "accuracy": float(
+                accuracy(preds, target, task="multiclass", num_classes=num_classes)
+            ),
+            "balanced_accuracy": float(
+                recall(
+                    preds,
+                    target,
+                    task="multiclass",
+                    num_classes=num_classes,
+                    average="macro",
+                )
+            ),
+            "macro_f1": float(
+                f1_score(
+                    preds,
+                    target,
+                    task="multiclass",
+                    num_classes=num_classes,
+                    average="macro",
+                )
+            ),
+        }
 
         return metrics
