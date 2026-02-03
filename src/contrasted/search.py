@@ -327,3 +327,32 @@ def normalize_numpy(embeddings: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return embeddings / norms
+
+
+def search_numpy(
+    queries: np.ndarray,
+    database: np.ndarray,
+    k: int,
+    *,
+    device: torch.device | str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """k-NN search for numpy arrays with torch backend.
+
+    Returns cosine similarities and indices into the database.
+    """
+    if device is None:
+        device = "cpu"
+    device = torch.device(device)
+
+    if queries.size == 0 or database.size == 0:
+        return (
+            np.empty((len(queries), k), dtype=np.float32),
+            np.empty((len(queries), k), dtype=np.int64),
+        )
+
+    db_tensor = torch.from_numpy(database).to(device)
+    query_tensor = torch.from_numpy(queries).to(device)
+
+    index = VectorIndex(db_tensor, normalized=True)
+    scores, indices = index.search(query_tensor, k)
+    return scores.cpu().numpy(), indices.cpu().numpy()
