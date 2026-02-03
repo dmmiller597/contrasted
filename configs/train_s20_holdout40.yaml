@@ -5,9 +5,9 @@ seed: 42
 
 datamodule:
   _target_: contrasted.data.EmbeddingDataModule
-  train_fasta: data/splits/s20_strict_holdout40_c123/train.fasta
-  val_fasta: data/splits/s20_strict_holdout40_c123/val.fasta
-  test_fasta: data/splits/s20_strict_holdout40_c123/test.fasta
+  train_fasta: data/s20_strict_holdout40_c123/train.fasta
+  val_fasta: data/s20_strict_holdout40_c123/val.fasta
+  test_fasta: data/s20_strict_holdout40_c123/test.fasta
   embedding_dir: data/cath-domain-seqs-S100-prostt5
   batch_size: 1024
   num_workers: 4
