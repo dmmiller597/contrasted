@@ -3,9 +3,63 @@
 import lightning as L
 import torch
 from torch.utils.data import DataLoader
-from torchmetrics.functional.classification import accuracy, f1_score, recall
 
 from .search import VectorIndex
+
+
+def _compute_multiclass_metrics(
+    preds: torch.Tensor, target: torch.Tensor
+) -> dict[str, float]:
+    """Memory-efficient multiclass metrics without full confusion matrix.
+
+    Computes accuracy, balanced accuracy (macro recall), and macro F1
+    by iterating only over classes present in the data.
+    """
+    # Accuracy: simple exact match
+    acc = (preds == target).float().mean().item()
+
+    # Get unique classes from both preds and target
+    all_classes = torch.unique(torch.cat([preds, target]))
+
+    # Per-class precision, recall for macro averaging
+    precisions = []
+    recalls = []
+
+    for c in all_classes:
+        pred_c = preds == c
+        target_c = target == c
+
+        tp = (pred_c & target_c).sum().float()
+        fp = (pred_c & ~target_c).sum().float()
+        fn = (~pred_c & target_c).sum().float()
+
+        # Precision: TP / (TP + FP)
+        if tp + fp > 0:
+            precisions.append((tp / (tp + fp)).item())
+        else:
+            precisions.append(0.0)
+
+        # Recall: TP / (TP + FN)
+        if tp + fn > 0:
+            recalls.append((tp / (tp + fn)).item())
+        else:
+            recalls.append(0.0)
+
+    # Macro averages
+    macro_precision = sum(precisions) / len(precisions) if precisions else 0.0
+    macro_recall = sum(recalls) / len(recalls) if recalls else 0.0
+
+    # Macro F1: harmonic mean of macro precision and macro recall
+    if macro_precision + macro_recall > 0:
+        macro_f1 = 2 * macro_precision * macro_recall / (macro_precision + macro_recall)
+    else:
+        macro_f1 = 0.0
+
+    return {
+        "accuracy": acc,
+        "balanced_accuracy": macro_recall,  # balanced accuracy = macro recall
+        "macro_f1": macro_f1,
+    }
 
 
 class KNNEvaluationCallback(L.Callback):
@@ -116,30 +170,4 @@ class KNNEvaluationCallback(L.Callback):
         indices = index.search(query_embeddings, k=1)[1].squeeze(1).cpu()
         preds = train_labels[indices]
         target = query_labels.cpu()
-        num_classes = int(max(preds.max(), target.max())) + 1
-
-        metrics = {
-            "accuracy": float(
-                accuracy(preds, target, task="multiclass", num_classes=num_classes)
-            ),
-            "balanced_accuracy": float(
-                recall(
-                    preds,
-                    target,
-                    task="multiclass",
-                    num_classes=num_classes,
-                    average="macro",
-                )
-            ),
-            "macro_f1": float(
-                f1_score(
-                    preds,
-                    target,
-                    task="multiclass",
-                    num_classes=num_classes,
-                    average="macro",
-                )
-            ),
-        }
-
-        return metrics
+        return _compute_multiclass_metrics(preds, target)
