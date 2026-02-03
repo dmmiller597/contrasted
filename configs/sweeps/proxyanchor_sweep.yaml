@@ -1,37 +1,39 @@
-# To use this sweep with configs/train_s20_holdout40.yaml as the base config:
+# To run this sweep, execute:
 # 1. Login to W&B: wandb login
 # 2. Initialize the sweep: wandb sweep configs/sweeps/proxyanchor_sweep.yaml
-# 3. Launch the agent (it will use the train_s20_holdout40.yaml base config):
-#    wandb agent <SWEEP_ID>
+# 3. Run the agent: wandb agent <SWEEP_ID>
 
 program: train.py
 method: bayes
 project: contrasted
-name: ProxyAnchor_Sweep_s20holdout40
+name: ProxyAnchor_Sweep
 metric:
   name: val/loss
   goal: min
 
+# Hyperparameters to search
 parameters:
-  # Loss type (fixed)
+  # Loss configuration
   model.loss_type:
     value: "proxy_anchor"
 
-  # ProxyAnchor hyperparameters
+  # ProxyAnchor-specific hyperparameters
+  # Margin: controls the decision boundary - wider coverage in best range
   model.loss_params.margin:
     values: [0.1, 0.2, 0.3]
+
+  # Alpha: scaling factor for the exponential - comprehensive sweep
   model.loss_params.alpha:
     values: [32, 48, 64]
 
-  # Learning rate sweep
+  # Learning rate - simplified to 6 values
   model.learning_rate:
     values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.003]
 
-# This command will run training with the base config and override hyperparameters.
+# The command that W&B will use to run your training script.
 command:
   - ${env}
   - python
   - ${program}
-  - "+config=configs/train_s20_holdout40.yaml"    # Use '+' to append base config
   - ${args_no_hyphens}
 
