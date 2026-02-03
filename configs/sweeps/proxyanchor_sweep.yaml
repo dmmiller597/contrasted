@@ -13,10 +13,6 @@ metric:
   goal: min
 
 parameters:
-  # Use the split/holdout configuration as the base config:
-  config:
-    value: configs/train_s20_holdout40.yaml
-  
   # Loss type (fixed)
   model.loss_type:
     value: "proxy_anchor"
@@ -36,6 +32,6 @@ command:
   - ${env}
   - python
   - ${program}
-  - "config=${config}"            # Pass the base config
+  - "+config=configs/train_s20_holdout40.yaml"    # Use '+' to append base config
   - ${args_no_hyphens}
 
