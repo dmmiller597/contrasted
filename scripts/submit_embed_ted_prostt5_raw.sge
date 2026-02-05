@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+source /share/apps/source_files/python/python-3.11.9.source
+export PATH="$HOME/.cargo/bin:$PATH"
+
 export TOKENIZERS_PARALLELISM=false
 export HF_HOME="/SAN/orengolab/functional-families/contrasted/.hf_cache"
 export TRANSFORMERS_CACHE="$HF_HOME/transformers"
