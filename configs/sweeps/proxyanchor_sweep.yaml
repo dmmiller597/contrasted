@@ -2,35 +2,42 @@
 # 1. Login to W&B: wandb login
 # 2. Initialize the sweep: wandb sweep configs/sweeps/proxyanchor_sweep.yaml
 # 3. Run the agent: wandb agent <SWEEP_ID>
+#
+# Early stopping uses val/loss (smoother signal, keeps training longer).
+# Sweep comparison uses val/knn_accuracy (comparable across alpha values).
 
 program: train.py
 method: bayes
 project: contrasted
-name: ProxyAnchor_Sweep
+name: ProxyAnchor_Sweep_v2
 metric:
-  name: val/loss
-  goal: min
+  name: val/knn_accuracy
+  goal: maximize
 
-# Hyperparameters to search
 parameters:
-  # Loss configuration
   model.loss_type:
     value: "proxy_anchor"
 
-  # ProxyAnchor-specific hyperparameters
-  # Margin: controls the decision boundary - wider coverage in best range
+  # Learning rate: log-spaced discrete values centered around 1e-3
+  # Dropped 1e-5 (too low to converge in 200 epochs with cosine schedule)
+  # Added 3e-4 to fill the gap between 1e-4 and 5e-4
+  model.learning_rate:
+    values: [0.00005, 0.0001, 0.0003, 0.0005, 0.001, 0.003]
+
+  # Margin: decision boundary offset on cosine similarity
+  # Paper default 0.1; your current best uses 0.3
   model.loss_params.margin:
     values: [0.1, 0.2, 0.3]
 
-  # Alpha: scaling factor for the exponential - comprehensive sweep
+  # Alpha: paper default vs aggressive — skip 48 (interpolation adds little)
   model.loss_params.alpha:
-    values: [32, 48, 64]
+    values: [32, 64]
 
-  # Learning rate - simplified to 6 values
-  model.learning_rate:
-    values: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.003]
+  # Output dimension: embedding space capacity
+  # 128 = current default; 256 tests whether 5226 SFs benefit from more room
+  model.output_dim:
+    values: [128, 256]
 
-# The command that W&B will use to run your training script.
 command:
   - ${env}
   - python
