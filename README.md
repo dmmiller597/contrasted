@@ -1,4 +1,8 @@
-# Contrasted
+
+<p align="center">
+  <img src="contrasted-logo.png" alt="Contrasted Logo" style="max-width: 100%; height: auto;"/>
+</p>
+
 
 
 Supervised contrastive learning for CATH protein superfamily classification.
@@ -43,7 +47,7 @@ uv run python train.py
 
 Configuration example:
 ```bash
-uv run python train.py model.loss_type=supcon data.batch_size=512
+uv run python train.py model.loss_type=supcon datamodule.batch_size=512
 ```
 
 <details>
@@ -60,7 +64,8 @@ python train.py model.loss_type=supcon data.batch_size=512
 ```bash
 uv run python make_db.py \
     model_path=outputs/checkpoints/epoch=108.ckpt \
-    index_path=data/vector_db/train.index
+    embedding_dir=data/cath-c123-S100-prostt5 \
+    index_path=data/vector_db/train.pt
 ```
 
 <details>
@@ -69,7 +74,8 @@ uv run python make_db.py \
 ```bash
 python make_db.py \
     model_path=outputs/checkpoints/epoch=108.ckpt \
-    index_path=data/vector_db/train.index
+    embedding_dir=data/cath-c123-S100-prostt5 \
+    index_path=data/vector_db/train.pt
 ```
 
 </details>
@@ -78,7 +84,8 @@ python make_db.py \
 ```bash
 uv run python annotate.py \
     model_path=outputs/checkpoints/epoch=108.ckpt \
-    index=data/vector_db/train.index \
+    index=data/vector_db/train.pt \
+    embedding_dir=data/cath-c123-S100-prostt5 \
     input=data/clustered_datasets/test/s30.fasta
 ```
 
@@ -88,7 +95,8 @@ uv run python annotate.py \
 ```bash
 python annotate.py \
     model_path=outputs/checkpoints/epoch=108.ckpt \
-    index=data/vector_db/train.index \
+    index=data/vector_db/train.pt \
+    embedding_dir=data/cath-c123-S100-prostt5 \
     input=data/clustered_datasets/test/s30.fasta
 ```
 
@@ -98,10 +106,19 @@ python annotate.py \
 
 Inputs:
 - FASTA: `>cath|{version}|{domain_id}/{start}-{end}`
-- Embeddings: `.pt` with keys `embeddings`, `labels`, `ids`, `idx_to_label`
+- Embedding directory:
+  - `embeddings.npy` (float16/float32)
+  - `labels.npy` (optional, int64)
+  - `ids.txt` (one ID per line)
+  - `metadata.json` (dims, dtype, count, source)
+  - `id_to_row.npy` (optional mapping dict for faster lookup)
 
 Outputs:
 - Annotations TSV: `query_id`, `predicted_annotation`, `distance`, `confidence`
+
+Index backend:
+- Default: FAISS (`faiss-cpu`)
+- Override: set `index_backend=torch` to use PyTorch search
 
 ## Development
 
