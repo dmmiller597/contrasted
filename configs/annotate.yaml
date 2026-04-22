@@ -3,7 +3,6 @@ k: 1
 id_to_annotation: data/cath-domain-sf-list.txt
 model_path: checkpoints/holdouts66.ckpt
 embedding_dir: data/cath-domain-seqs-S100-prostt5
-index_backend: faiss
 index: data/vector_db/train.pt
 output_dir: outputs/annotations
 distance_cutoff: 1
@@ -11,3 +10,8 @@ return_distance: true
 return_confidence: false
 return_true_annotation: false
 batch_size: 8192
+tm_align: false
+structure_dir: null
+tmalign_binary: TMalign
+compute_metrics: false
+num_thresholds: 50

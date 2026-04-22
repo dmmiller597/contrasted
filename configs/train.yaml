@@ -5,7 +5,7 @@ seed: 42
 
 datamodule:
   _target_: contrasted.data.EmbeddingDataModule
-  train_fasta: data/cath_s40_split/train.fasta
+  train_fasta: data/cath_s40_split/train_excl_holdouts.fasta
   val_fasta: data/cath_s40_split/val.fasta
   test_fasta: data/cath_s40_split/test.fasta
   embedding_dir: data/cath-domain-seqs-S100-prostt5
@@ -14,15 +14,19 @@ datamodule:
 
 model:
   _target_: contrasted.model.ContrastiveModel
-  input_dim: 1024
-  hidden_dim: 512
-  output_dim: 128
-  dropout: 0.1
-  loss_type: proxy_anchor
-  loss_params:
+  projection_head:
+    _target_: contrasted.model.ProjectionHead
+    input_dim: 1024
+    hidden_dim: 512
+    output_dim: 128
+    dropout: 0.1
+  loss:
+    _target_: contrasted.losses.ProxyAnchorLoss
+    embedding_dim: ${model.projection_head.output_dim}
+    num_classes: 0  # resolved from datamodule.num_classes in train.py
     margin: 0.3
     alpha: 32
-  learning_rate: 1e-3
+  learning_rate: 0.003
   weight_decay: 1e-4
   max_epochs: ${trainer.max_epochs}
   warmup_epochs: 10
@@ -44,8 +48,8 @@ logger:
 
 callbacks:
   - _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    monitor: val/loss
-    mode: min
+    monitor: val/knn_accuracy
+    mode: max
     save_top_k: 1
     dirpath: ${hydra:run.dir}/checkpoints
   - _target_: lightning.pytorch.callbacks.EarlyStopping
