@@ -1,47 +1,41 @@
-data/
+# External tools and projects
+tools/
+!tools/README.md
+
+benchmarks/
+
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
+*$py.class
 *.so
-
-# Virtual environments
-venv/
-env/
-.venv/
-.env
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Distribution
+.Python
 dist/
 build/
 *.egg-info/
 
-# Testing
+# Environments
+.venv/
+.env
+
+# Tools
+.ruff_cache/
+.ty_cache/
 .pytest_cache/
-.coverage
-htmlcov/
+.mypy_cache/
 
-# Jupyter
-.ipynb_checkpoints/
+# IDE
+.idea/
+.vscode/
+*.swp
+.cursor/
 
-# Outputs and logs (Hydra + Lightning)
+# Project specific
+data/
 outputs/
-multirun/
-wandb/
-logs/
-results/
 checkpoints/
-*.log
+wandb/
 
+# OS
+.DS_Store
+Thumbs.db
