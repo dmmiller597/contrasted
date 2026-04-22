@@ -1,0 +1,13 @@
+input: ???            # FASTA file or directory of FASTAs
+output_dir: ???       # Destination directory for the 4-file embedding layout
+labels: null          # Optional label file (domain_id, superfamily)
+overwrite: false
+
+# ProstT5 encoding options
+model_name: Rostlab/ProstT5
+half: true            # Ignored on CPU/MPS (full precision only)
+max_residues: 4000
+max_batch: 100
+max_seq_len: 1000
+dtype: float16
+device: null          # Auto-detect (CUDA > MPS > CPU); override with "cpu"/"cuda"
