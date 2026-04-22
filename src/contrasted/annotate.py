@@ -30,7 +30,9 @@ from contrasted.data import (
     EmbeddingStore,
     load_domain_ids_from_fasta,
     resolve_fasta_paths,
+    resolve_store,
 )
+from contrasted.embed import build_encode_config
 from contrasted.model import ContrastiveModel
 from contrasted.search import VectorIndex
 from contrasted.tmalign import (
@@ -501,8 +503,12 @@ def run(cfg: DictConfig) -> None:
     output_dir = Path(cfg.get("output_dir", "outputs/annotations"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    embedding_dir = Path(cfg.get("embedding_dir", "data/cath-c123-S100"))
-    store = EmbeddingStore.from_dir(embedding_dir)
+    embedding_dir = cfg.get("embedding_dir")
+    store = resolve_store(
+        embedding_dir=embedding_dir,
+        fasta_paths=list(input_paths.values()),
+        encode_config=build_encode_config(cfg.get("embed")),
+    )
 
     return_distance = bool(cfg.get("return_distance", True))
     return_confidence = bool(cfg.get("return_confidence", False))

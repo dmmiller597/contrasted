@@ -10,9 +10,10 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from contrasted.data import (
-    EmbeddingStore,
     load_domain_ids_from_fasta,
+    resolve_store,
 )
+from contrasted.embed import build_encode_config
 from contrasted.model import ContrastiveModel
 from contrasted.search import VectorIndex
 from contrasted.utils import get_device, load_labels
@@ -72,15 +73,20 @@ def run(cfg: DictConfig) -> None:
     else:
         logger.info(f"Processing {len(domain_ids)} sequences")
 
-    embedding_dir = Path(cfg.get("embedding_dir", "data/cath-c123-S100"))
-    store = EmbeddingStore.from_dir(embedding_dir)
+    embedding_dir = cfg.get("embedding_dir")
+    store = resolve_store(
+        embedding_dir=embedding_dir,
+        fasta_paths=[input_path],
+        encode_config=build_encode_config(cfg.get("embed")),
+    )
     indices, domain_ids, missing_ids = store.resolve(domain_ids)
     if missing_ids:
-        logger.warning(f"{len(missing_ids)} domain IDs not found in {embedding_dir}")
-    if not indices:
-        raise ValueError(
-            f"No embeddings found for any requested IDs in {embedding_dir}"
+        logger.warning(
+            f"{len(missing_ids)} domain IDs not found in "
+            f"{embedding_dir or 'on-the-fly encoding'}"
         )
+    if not indices:
+        raise ValueError("No embeddings found for any requested IDs")
 
     projected = project_embeddings(
         model,
