@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import lightning as L
@@ -12,13 +13,18 @@ from torch.utils.data import DataLoader, Dataset
 logger = logging.getLogger(__name__)
 
 
-def parse_fasta_header(header: str) -> str:
-    """Extract domain_id from FASTA header.
+# ---------------------------------------------------------------------------
+# FASTA helpers
+# ---------------------------------------------------------------------------
 
-    Supported formats:
-    - CATH: >cath|{cath_release}|{domain_id}/{start}-{end}
-    - TED/AlphaFold: >AF-..._TED03
-    - Fallback: take first token after ">" (before whitespace)
+
+def parse_fasta_header(header: str) -> str:
+    """Extract a domain/sequence ID from a FASTA header line.
+
+    Recognized formats:
+    - CATH: ``>cath|{cath_release}|{domain_id}/{start}-{end}`` -> ``domain_id``
+    - Fallback (including TED/AlphaFold ``>AF-..._TED03``): first whitespace
+      token after ``>``, with any trailing ``/start-end`` stripped.
     """
     header = header.strip()
     if not header.startswith(">"):
@@ -27,13 +33,13 @@ def parse_fasta_header(header: str) -> str:
     token = header[1:].split()[0]
     parts = token.split("|")
     if len(parts) >= 3:
-        return parts[2].split("/")[0]
+        return parts[2].split("/", 1)[0]
     return token.split("/", 1)[0]
 
 
 def load_domain_ids_from_fasta(fasta_path: str | Path) -> list[str]:
-    """Read FASTA file and return list of domain IDs."""
-    domain_ids = []
+    """Read a FASTA file and return the list of parsed domain IDs (in order)."""
+    domain_ids: list[str] = []
     with open(fasta_path) as f:
         for line in f:
             if line.startswith(">"):
@@ -45,7 +51,10 @@ def load_domain_ids_from_fasta(fasta_path: str | Path) -> list[str]:
 
 
 def resolve_fasta_paths(fasta_input: str | Path) -> dict[str, Path]:
-    """Resolve FASTA paths - handles single file or directory."""
+    """Resolve ``fasta_input`` to a dict mapping split name -> path.
+
+    Accepts a single file or a directory; returns ``{}`` if nothing is found.
+    """
     fasta_input = Path(fasta_input)
     if fasta_input.is_dir():
         fasta_files = sorted(fasta_input.glob("*.fasta")) + sorted(
@@ -62,131 +71,200 @@ def resolve_fasta_paths(fasta_input: str | Path) -> dict[str, Path]:
     return {}
 
 
-def read_ids_txt(path: Path) -> list[str]:
-    """Read ids.txt with one ID per line."""
-    ids = []
+# ---------------------------------------------------------------------------
+# Embedding directory loading
+# ---------------------------------------------------------------------------
+
+
+def _read_ids_txt(path: Path) -> list[str]:
     with open(path) as f:
-        for line in f:
-            id_ = line.strip()
-            if id_:
-                ids.append(id_)
-    return ids
+        return [line.strip() for line in f if line.strip()]
 
 
-def load_id_to_idx(embedding_dir: str | Path, ids: list[str]) -> dict[str, int]:
-    """Load or build ID to index mapping for an embedding directory.
-
-    If id_to_row.npy exists, loads the mapping from there.
-    Otherwise, builds mapping from the ids list.
-    """
-    embedding_dir = Path(embedding_dir)
+def _load_id_to_idx(embedding_dir: Path, ids: list[str]) -> dict[str, int]:
+    """Load ``id_to_row.npy`` if present, else build from ``ids``."""
     mapping_path = embedding_dir / "id_to_row.npy"
     if mapping_path.exists():
-        mapping_obj = np.load(mapping_path, allow_pickle=True)
-        if isinstance(mapping_obj, np.ndarray) and mapping_obj.shape == ():
-            mapping_obj = mapping_obj.item()
-        if isinstance(mapping_obj, dict):
-            return {str(k): int(v) for k, v in mapping_obj.items()}
+        obj = np.load(mapping_path, allow_pickle=True)
+        if isinstance(obj, np.ndarray) and obj.shape == ():
+            obj = obj.item()
+        if isinstance(obj, dict):
+            return {str(k): int(v) for k, v in obj.items()}
+        logger.warning(
+            "id_to_row.npy in %s is not a dict (got %s); rebuilding",
+            embedding_dir,
+            type(obj).__name__,
+        )
     return {id_: i for i, id_ in enumerate(ids)}
 
 
-def read_labels_npy(path: Path) -> np.ndarray:
-    """Read labels.npy as int64."""
-    labels = np.load(path)
-    return np.asarray(labels, dtype=np.int64)
-
-
-def _load_metadata(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
-
-
-def _get_metadata_value(metadata: dict, keys: list[str]) -> int | str | None:
+def _metadata_value(metadata: dict, keys: list[str]):
     for key in keys:
         if key in metadata:
             return metadata[key]
     return None
 
 
-def load_embedding_dir(
-    embedding_dir: str | Path,
-    *,
-    require_labels: bool = False,
-) -> tuple[np.ndarray, list[str], np.ndarray | None, dict[int, str] | None]:
-    """Load embedding directory containing embeddings.npy, ids.txt, metadata.json."""
-    embedding_dir = Path(embedding_dir)
-    embeddings_path = embedding_dir / "embeddings.npy"
-    ids_path = embedding_dir / "ids.txt"
-    metadata_path = embedding_dir / "metadata.json"
-    labels_path = embedding_dir / "labels.npy"
-
-    if not embeddings_path.exists():
-        raise FileNotFoundError(f"Missing embeddings.npy in {embedding_dir}")
-    if not ids_path.exists():
-        raise FileNotFoundError(f"Missing ids.txt in {embedding_dir}")
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Missing metadata.json in {embedding_dir}")
-
-    metadata = _load_metadata(metadata_path)
-    dim = _get_metadata_value(metadata, ["dims", "dim", "embedding_dim"])
-    count = _get_metadata_value(metadata, ["count", "num_embeddings", "n_embeddings"])
-    dtype_str = _get_metadata_value(metadata, ["dtype"])
-
-    embeddings = np.load(embeddings_path, mmap_mode="r")
-    if dtype_str is not None:
-        expected_dtype = np.dtype(dtype_str)
-        if embeddings.dtype != expected_dtype:
-            raise ValueError(
-                "embeddings.npy dtype "
-                f"{embeddings.dtype} != metadata dtype {expected_dtype}"
-            )
-    if dim is not None and embeddings.shape[1] != int(dim):
-        raise ValueError(
-            f"embeddings.npy dim {embeddings.shape[1]} != metadata dim {dim}"
-        )
-    if count is not None and embeddings.shape[0] != int(count):
-        raise ValueError(
-            f"embeddings.npy count {embeddings.shape[0]} != metadata count {count}"
-        )
-
-    ids = read_ids_txt(ids_path)
-    if len(ids) != embeddings.shape[0]:
-        raise ValueError(
-            "ids.txt has "
-            f"{len(ids)} entries but embeddings.npy has {embeddings.shape[0]}"
-        )
-
-    labels = None
-    if labels_path.exists():
-        labels = read_labels_npy(labels_path)
-        if labels.shape[0] != embeddings.shape[0]:
-            raise ValueError(
-                "labels.npy has "
-                f"{labels.shape[0]} entries but embeddings.npy has "
-                f"{embeddings.shape[0]}"
-            )
-    elif require_labels:
-        raise FileNotFoundError(f"Missing labels.npy in {embedding_dir}")
-
+def _load_idx_to_label(embedding_dir: Path, metadata: dict) -> dict[int, str] | None:
     idx_to_label = metadata.get("idx_to_label")
     if isinstance(idx_to_label, dict):
-        idx_to_label = {int(k): v for k, v in idx_to_label.items()}
-    else:
-        idx_to_label = None
+        return {int(k): v for k, v in idx_to_label.items()}
 
-    return embeddings, ids, labels, idx_to_label
+    sidecar = metadata.get("idx_to_label_file")
+    if sidecar:
+        path = embedding_dir / sidecar
+        if path.exists():
+            with open(path) as f:
+                raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# EmbeddingStore: the single entry point for embedding-directory I/O
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EmbeddingStore:
+    """Owns the contents of an embedding directory.
+
+    The directory must contain:
+    - ``embeddings.npy``: ``(N, D)`` array (memory-mapped on load)
+    - ``ids.txt``: one ID per line
+    - ``metadata.json``: at minimum ``dims``/``count``/``dtype``
+    - ``labels.npy`` (optional): ``(N,)`` int64 class indices
+    - ``id_to_row.npy`` (optional): precomputed ID -> row mapping
+    """
+
+    embeddings: np.ndarray
+    ids: list[str]
+    labels: np.ndarray | None
+    id_to_idx: dict[str, int]
+    idx_to_label: dict[int, str] | None = None
+    embedding_dir: Path | None = field(default=None, compare=False)
+
+    @classmethod
+    def from_dir(
+        cls,
+        path: str | Path,
+        *,
+        require_labels: bool = False,
+    ) -> "EmbeddingStore":
+        path = Path(path)
+        embeddings_path = path / "embeddings.npy"
+        ids_path = path / "ids.txt"
+        metadata_path = path / "metadata.json"
+        labels_path = path / "labels.npy"
+
+        for required, name in [
+            (embeddings_path, "embeddings.npy"),
+            (ids_path, "ids.txt"),
+            (metadata_path, "metadata.json"),
+        ]:
+            if not required.exists():
+                raise FileNotFoundError(f"Missing {name} in {path}")
+
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+
+        embeddings = np.load(embeddings_path, mmap_mode="r")
+
+        dim = _metadata_value(metadata, ["dims", "dim", "embedding_dim"])
+        count = _metadata_value(metadata, ["count", "num_embeddings", "n_embeddings"])
+        dtype_str = _metadata_value(metadata, ["dtype"])
+
+        if dtype_str is not None:
+            expected_dtype = np.dtype(dtype_str)
+            if embeddings.dtype != expected_dtype:
+                raise ValueError(
+                    f"embeddings.npy dtype {embeddings.dtype} != "
+                    f"metadata dtype {expected_dtype}"
+                )
+        if dim is not None and embeddings.shape[1] != int(dim):
+            raise ValueError(
+                f"embeddings.npy dim {embeddings.shape[1]} != metadata dim {dim}"
+            )
+        if count is not None and embeddings.shape[0] != int(count):
+            raise ValueError(
+                f"embeddings.npy count {embeddings.shape[0]} != metadata count {count}"
+            )
+
+        ids = _read_ids_txt(ids_path)
+        if len(ids) != embeddings.shape[0]:
+            raise ValueError(
+                f"ids.txt has {len(ids)} entries but embeddings.npy has "
+                f"{embeddings.shape[0]}"
+            )
+
+        labels: np.ndarray | None = None
+        if labels_path.exists():
+            labels = np.asarray(np.load(labels_path), dtype=np.int64)
+            if labels.shape[0] != embeddings.shape[0]:
+                raise ValueError(
+                    f"labels.npy has {labels.shape[0]} entries but "
+                    f"embeddings.npy has {embeddings.shape[0]}"
+                )
+        elif require_labels:
+            raise FileNotFoundError(f"Missing labels.npy in {path}")
+
+        idx_to_label = _load_idx_to_label(path, metadata)
+
+        return cls(
+            embeddings=embeddings,
+            ids=ids,
+            labels=labels,
+            id_to_idx=_load_id_to_idx(path, ids),
+            idx_to_label=idx_to_label,
+            embedding_dir=path,
+        )
+
+    @property
+    def dim(self) -> int:
+        return int(self.embeddings.shape[1])
+
+    @property
+    def num_classes(self) -> int:
+        return len(self.idx_to_label) if self.idx_to_label else 0
+
+    def resolve(self, domain_ids: list[str]) -> tuple[list[int], list[str], list[str]]:
+        """Map domain IDs to embedding-row indices.
+
+        Returns ``(found_indices, found_ids, missing_ids)`` in the same
+        order as ``domain_ids``.
+        """
+        found_idx: list[int] = []
+        found_ids: list[str] = []
+        missing_ids: list[str] = []
+        for domain_id in domain_ids:
+            row = self.id_to_idx.get(domain_id)
+            if row is None:
+                missing_ids.append(domain_id)
+            else:
+                found_idx.append(row)
+                found_ids.append(domain_id)
+        return found_idx, found_ids, missing_ids
+
+    def get_batch(
+        self, domain_ids: list[str]
+    ) -> tuple[torch.Tensor, list[str], list[str]]:
+        """Fetch embeddings for ``domain_ids`` as a ``(M, D)`` float tensor."""
+        found_idx, found_ids, missing_ids = self.resolve(domain_ids)
+        if found_idx:
+            batch_np = np.array(self.embeddings[found_idx], copy=True)
+            batch = torch.from_numpy(batch_np).float()
+        else:
+            batch = torch.empty(0, self.dim)
+        return batch, found_ids, missing_ids
+
+
+# ---------------------------------------------------------------------------
+# Dataset / DataModule
+# ---------------------------------------------------------------------------
 
 
 class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
-    """Protein embeddings from embedding directory.
-
-    The embedding directory contains:
-        - embeddings.npy: (N, D) float16/float32
-        - labels.npy: (N,) int64
-        - ids.txt: one ID per line
-
-    This dataset uses a subset defined by indices (from fasta file filtering).
-    """
+    """A subset of an embedding array, defined by row indices."""
 
     def __init__(
         self,
@@ -205,8 +283,9 @@ class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
         data_idx = self.indices[idx]
         embedding = self.embeddings[data_idx]
         if isinstance(embedding, np.ndarray):
-            # Copy needed for memory-mapped arrays (mmap_mode="r" returns read-only)
-            embedding = torch.from_numpy(np.array(embedding)).float()
+            # Copy to defeat memory-mapped read-only arrays, which torch
+            # accepts but warns about.
+            embedding = torch.from_numpy(np.array(embedding, copy=True)).float()
         label = self.labels[data_idx]
         if isinstance(label, np.ndarray):
             label = int(label)
@@ -216,7 +295,13 @@ class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
 
 
 class EmbeddingDataModule(L.LightningDataModule):
-    """Protein domain classification data using embedding directories."""
+    """Lightning data module backed by an :class:`EmbeddingStore`.
+
+    Each split (train/val/test) is defined by a FASTA file whose headers
+    name domains present in ``embedding_dir``. ``test_fasta`` may be a
+    single file, a directory of FASTAs, or a list of paths; each becomes
+    one entry in :attr:`test_datasets`.
+    """
 
     def __init__(
         self,
@@ -240,24 +325,28 @@ class EmbeddingDataModule(L.LightningDataModule):
         self.embedding_dir = Path(embedding_dir)
         self.pin_memory = pin_memory and not torch.backends.mps.is_available()
 
-        self.embeddings: np.ndarray | None = None
-        self.labels: np.ndarray | None = None
-        self.id_to_idx: dict[str, int] | None = None
-        self.idx_to_label: dict[int, str] | None = None
-        self.test_datasets: dict[str, EmbeddingDataset] | None = None
+        self.store: EmbeddingStore | None = None
+        self.test_datasets: dict[str, EmbeddingDataset] = {}
 
-    def _resolve_test_paths(self, test_fasta: str | list[str]) -> dict[str, Path]:
+    @staticmethod
+    def _resolve_test_paths(
+        test_fasta: str | list[str],
+    ) -> dict[str, Path]:
         if isinstance(test_fasta, list):
             return {Path(p).stem: Path(p) for p in test_fasta}
         return resolve_fasta_paths(Path(test_fasta))
 
     @property
     def num_classes(self) -> int:
-        return len(self.idx_to_label) if self.idx_to_label else 0
+        if self.store is None:
+            return 0
+        if self.store.idx_to_label:
+            return len(self.store.idx_to_label)
+        return 0
 
     def setup(self, stage: str | None = None):
-        if self.embeddings is None:
-            self._load_embedding_dir()
+        if self.store is None:
+            self._load_store()
 
         if stage in ("fit", None):
             self.train_dataset = self._create_dataset(self.train_fasta)
@@ -268,68 +357,38 @@ class EmbeddingDataModule(L.LightningDataModule):
                 name: self._create_dataset(path)
                 for name, path in self.test_fasta_paths.items()
             }
-            if self.test_datasets:
-                self.test_dataset = next(iter(self.test_datasets.values()))
 
-    def _load_embedding_dir(self):
-        """Load embeddings, labels, and IDs from embedding directory."""
+    def _load_store(self) -> None:
         logger.info(f"Loading embeddings from: {self.embedding_dir}")
-
-        embeddings, ids, labels, idx_to_label = load_embedding_dir(
-            self.embedding_dir,
-            require_labels=True,
-        )
-        assert labels is not None
-
-        self.embeddings = embeddings
-        self.labels = labels
-        self.id_to_idx = {id_: i for i, id_ in enumerate(ids)}
-
-        if idx_to_label:
-            self.idx_to_label = idx_to_label
-        else:
-            unique_labels = np.unique(labels).tolist()
-            self.idx_to_label = {int(i): str(int(i)) for i in unique_labels}
-
+        self.store = EmbeddingStore.from_dir(self.embedding_dir, require_labels=True)
+        if self.store.idx_to_label is None and self.store.labels is not None:
+            unique = np.unique(self.store.labels).tolist()
+            self.store.idx_to_label = {int(i): str(int(i)) for i in unique}
         logger.info(
-            f"Loaded {len(ids)} embeddings, "
-            f"{self.embeddings.shape[1]} dims, "
-            f"{len(self.idx_to_label)} classes"
+            f"Loaded {len(self.store.ids)} embeddings, "
+            f"{self.store.dim} dims, {self.num_classes} classes"
         )
 
     def _create_dataset(self, fasta_path: Path) -> EmbeddingDataset:
-        """Create dataset for a split defined by fasta file."""
-        assert self.embeddings is not None and self.labels is not None
-        assert self.id_to_idx is not None
+        assert self.store is not None and self.store.labels is not None
 
         domain_ids = load_domain_ids_from_fasta(fasta_path)
+        indices, _, missing_ids = self.store.resolve(domain_ids)
 
-        indices = []
-        missing = 0
-        for domain_id in domain_ids:
-            if domain_id in self.id_to_idx:
-                indices.append(self.id_to_idx[domain_id])
-            else:
-                missing += 1
-
-        if missing > 0:
+        if missing_ids:
             logger.warning(
-                f"{fasta_path.name}: {missing}/{len(domain_ids)} domains not found"
+                f"{fasta_path.name}: {len(missing_ids)}/{len(domain_ids)} "
+                "domains not found"
             )
-
-        if len(indices) == 0:
+        if not indices:
             raise ValueError(
                 f"{fasta_path.name}: No valid samples found. "
-                f"All {len(domain_ids)} domains are missing from embedding directory."
+                f"All {len(domain_ids)} domains are missing from "
+                "embedding directory."
             )
-
         logger.info(f"{fasta_path.name}: {len(indices)} samples")
 
-        return EmbeddingDataset(
-            self.embeddings,
-            self.labels,
-            indices,
-        )
+        return EmbeddingDataset(self.store.embeddings, self.store.labels, indices)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -345,10 +404,10 @@ class EmbeddingDataModule(L.LightningDataModule):
         return self._dataloader(self.val_dataset)
 
     def test_dataloader(self) -> DataLoader | list[DataLoader]:
-        assert self.test_datasets is not None
-        if len(self.test_datasets) == 1:
-            return self._dataloader(self.test_dataset)
-        return [self._dataloader(ds) for ds in self.test_datasets.values()]
+        loaders = [self._dataloader(ds) for ds in self.test_datasets.values()]
+        if len(loaders) == 1:
+            return loaders[0]
+        return loaders
 
     def _dataloader(self, dataset: Dataset) -> DataLoader:
         return DataLoader(

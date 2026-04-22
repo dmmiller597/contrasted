@@ -11,7 +11,9 @@ EPS = 1e-12
 class SupConLoss(nn.Module):
     """Supervised Contrastive Learning (Khosla et al., NeurIPS 2020).
 
-    Expects L2-normalized embeddings from ProjectionHead.
+    Expects L2-normalized embeddings from ProjectionHead. Anchors whose class
+    has no other member in the batch are excluded from the loss average, so the
+    objective is not biased by batch composition.
     """
 
     def __init__(self, temperature: float = 0.07):
@@ -21,26 +23,28 @@ class SupConLoss(nn.Module):
         self.temperature = temperature
 
     def forward(self, embeddings: Tensor, labels: Tensor) -> Tensor:
-        device = embeddings.device
         batch_size = embeddings.shape[0]
+        device = embeddings.device
 
-        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
-        logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
-        logits = similarity_matrix - logits_max.detach()
+        similarity = (embeddings @ embeddings.T) / self.temperature
+        logits = similarity - similarity.max(dim=1, keepdim=True).values.detach()
 
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device)
-        logits_mask = torch.ones_like(mask) - torch.eye(batch_size, device=device)
-        mask = mask * logits_mask
+        same_class = labels.view(-1, 1).eq(labels.view(1, -1)).float()
+        self_mask = torch.eye(batch_size, device=device)
+        pos_mask = same_class - self_mask
+        other_mask = 1.0 - self_mask
 
-        exp_logits = torch.exp(logits) * logits_mask
+        exp_logits = torch.exp(logits) * other_mask
         log_prob = logits - torch.log(
-            exp_logits.sum(dim=1, keepdim=True).clamp(min=EPS)
+            exp_logits.sum(dim=1, keepdim=True).clamp_min(EPS)
         )
 
-        pos_mask_sum = mask.sum(dim=1).clamp(min=EPS)
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / pos_mask_sum
+        pos_count = pos_mask.sum(dim=1)
+        valid = pos_count > 0
+        if not valid.any():
+            return logits.sum() * 0.0
 
+        mean_log_prob_pos = (pos_mask * log_prob).sum(dim=1)[valid] / pos_count[valid]
         return -mean_log_prob_pos.mean()
 
     def __repr__(self) -> str:
@@ -50,7 +54,10 @@ class SupConLoss(nn.Module):
 class ProxyAnchorLoss(nn.Module):
     """Proxy-Anchor Loss (Kim et al., CVPR 2020).
 
-    Expects L2-normalized embeddings from ProjectionHead.
+    Expects L2-normalized embeddings from ProjectionHead. Proxies are kept
+    unit-norm via an in-place renormalization at the top of ``forward``; the
+    normalization is performed under ``no_grad`` so gradients flow to the raw
+    proxy parameter as usual.
     """
 
     def __init__(
@@ -66,41 +73,34 @@ class ProxyAnchorLoss(nn.Module):
         self.margin = margin
         self.alpha = alpha
 
-        self.proxies = nn.Parameter(torch.randn(num_classes, embedding_dim))
-        nn.init.kaiming_normal_(self.proxies, mode="fan_out")
+        proxies = torch.empty(num_classes, embedding_dim)
+        nn.init.kaiming_normal_(proxies, mode="fan_out")
+        proxies = F.normalize(proxies, p=2, dim=1)
+        self.proxies = nn.Parameter(proxies)
 
     def forward(self, embeddings: Tensor, labels: Tensor) -> Tensor:
-        device = embeddings.device
+        with torch.no_grad():
+            self.proxies.copy_(F.normalize(self.proxies, p=2, dim=1))
 
-        proxies_norm = F.normalize(self.proxies, p=2, dim=1)
-        cos_sim = F.linear(embeddings, proxies_norm)
+        cos_sim = embeddings @ self.proxies.T
 
-        P_one_hot = F.one_hot(labels, num_classes=self.num_classes).float().to(device)
-        N_one_hot = 1.0 - P_one_hot
+        pos_mask = F.one_hot(labels, num_classes=self.num_classes).float()
+        neg_mask = 1.0 - pos_mask
 
         pos_exp = torch.exp(-self.alpha * (cos_sim - self.margin))
         neg_exp = torch.exp(self.alpha * (cos_sim + self.margin))
 
-        P_sim_sum = torch.where(P_one_hot == 1, pos_exp, torch.zeros_like(pos_exp)).sum(
-            dim=0
-        )
-        N_sim_sum = torch.where(N_one_hot == 1, neg_exp, torch.zeros_like(neg_exp)).sum(
-            dim=0
-        )
+        pos_sum = (pos_exp * pos_mask).sum(dim=0)
+        neg_sum = (neg_exp * neg_mask).sum(dim=0)
 
-        with_pos_proxies = torch.nonzero(
-            P_one_hot.sum(dim=0) > 0, as_tuple=False
-        ).squeeze(dim=1)
-        num_valid_pos_proxies = with_pos_proxies.numel()
+        classes_with_positives = pos_mask.sum(dim=0) > 0
+        num_valid = int(classes_with_positives.sum().item())
 
-        if num_valid_pos_proxies == 0:
-            return torch.log(1.0 + N_sim_sum).mean()
+        if num_valid == 0:
+            return torch.log(1.0 + neg_sum).mean()
 
-        pos_term = (
-            torch.log(1.0 + P_sim_sum[with_pos_proxies]).sum() / num_valid_pos_proxies
-        )
-        neg_term = torch.log(1.0 + N_sim_sum).sum() / self.num_classes
-
+        pos_term = torch.log(1.0 + pos_sum[classes_with_positives]).sum() / num_valid
+        neg_term = torch.log(1.0 + neg_sum).sum() / self.num_classes
         return pos_term + neg_term
 
     def __repr__(self) -> str:
