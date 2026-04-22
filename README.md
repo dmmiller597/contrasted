@@ -13,9 +13,9 @@ cd contrasted
 uv sync
 ```
 
-`uv sync` installs the runtime dependencies plus the `dev` group (`pytest`, `ruff`, `ty`). Optional extras:
+`uv sync` installs everything needed for training, embedding, make-db, and annotation, plus the `dev` group (`pytest`, `ruff`, `ty`). Optional extras:
 
-- `uv sync --extra embed` -- ProstT5/transformers dependencies for generating embeddings.
+- `uv sync --extra cloud` -- Modal dependency for the cloud embedding scripts under `scripts/`.
 - `uv sync --extra analysis` -- libraries used by the exploratory scripts under `scripts/` (polars, matplotlib, scipy, umap, etc.).
 
 <details>
@@ -24,48 +24,67 @@ uv sync
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[embed]"
+python -m pip install -e .
 ```
 
 </details>
 
 ## Quick Start
 
-Three console scripts are installed with the package:
+Four console scripts are installed with the package:
 
 | Command | Purpose |
 |---|---|
 | `contrasted-train` | Train a model. |
-| `contrasted-make-db` | Build a vector database from a checkpoint. |
-| `contrasted-annotate` | Annotate queries against a vector database (pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
+| `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory. |
+| `contrasted-make-db` | Build a vector database from a checkpoint (accepts FASTA directly). |
+| `contrasted-annotate` | Annotate queries against a vector database (accepts FASTA directly; pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
 
 All scripts are Hydra entry points; override any config key on the command line.
+
+### Annotate a FASTA (one step)
+
+```bash
+uv run contrasted-annotate \
+    input=queries.fasta \
+    model_path=outputs/checkpoints/best.ckpt \
+    index=data/vector_db/train.pt
+```
+
+`contrasted-annotate` encodes `queries.fasta` with ProstT5 in-process, projects the embeddings through the checkpoint, and writes the TSV. No preprocessing step required.
+
+For repeat runs, set `embedding_dir=path/to/cache` -- on-the-fly embeddings are written there once and loaded on subsequent runs:
+
+```bash
+uv run contrasted-annotate \
+    input=queries.fasta \
+    model_path=outputs/checkpoints/best.ckpt \
+    index=data/vector_db/train.pt \
+    embedding_dir=cache/queries-prostt5
+```
+
+Or precompute explicitly:
+
+```bash
+uv run contrasted-embed input=queries.fasta output_dir=cache/queries-prostt5
+```
+
+### Build a vector database
+
+```bash
+uv run contrasted-make-db \
+    input=reference.fasta \
+    model_path=outputs/checkpoints/best.ckpt \
+    index_path=data/vector_db/train.pt
+```
+
+`embedding_dir=<path>` may optionally be set to reuse or cache ProstT5 embeddings for the reference set.
 
 ### Train
 
 ```bash
 uv run contrasted-train
 uv run contrasted-train +experiment=supcon datamodule.batch_size=512
-```
-
-### Build vector database
-
-```bash
-uv run contrasted-make-db \
-    model_path=outputs/checkpoints/best.ckpt \
-    embedding_dir=data/cath-c123-S100-prostt5 \
-    index_path=data/vector_db/train.pt
-```
-
-### Annotate sequences
-
-```bash
-uv run contrasted-annotate \
-    model_path=outputs/checkpoints/best.ckpt \
-    index=data/vector_db/train.pt \
-    embedding_dir=data/cath-c123-S100-prostt5 \
-    input=data/clustered_datasets/test/s30.fasta \
-    compute_metrics=true   # writes metrics.json + selective_curve.tsv when labels are set
 ```
 
 ## Data Format
