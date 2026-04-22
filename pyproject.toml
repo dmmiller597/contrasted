@@ -24,6 +24,9 @@ dependencies = [
     "omegaconf>=2.3",
     "wandb>=0.25",
     "tqdm>=4.60",
+    # ProstT5 encoder (FASTA -> contrasted annotations runs end-to-end)
+    "transformers>=4.40,<5",
+    "sentencepiece>=0.2",
 ]
 
 [project.urls]
@@ -31,9 +34,8 @@ Repository = "https://github.com/dmmiller597/contrasted"
 Issues = "https://github.com/dmmiller597/contrasted/issues"
 
 [project.optional-dependencies]
-embed = [
-    "transformers>=4.40",
-    "sentencepiece>=0.2",
+# Cloud execution (Modal scripts under scripts/). Not required for local use.
+cloud = [
     "modal>=1.3.1",
 ]
 # Optional dependencies used by the exploratory/analysis scripts under
@@ -61,6 +63,7 @@ analysis = [
 
 [project.scripts]
 contrasted-train = "contrasted.train:main"
+contrasted-embed = "contrasted.embed:main"
 contrasted-make-db = "contrasted.make_db:main"
 contrasted-annotate = "contrasted.annotate:main"
 
