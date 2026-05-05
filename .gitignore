@@ -33,9 +33,13 @@ build/
 # Project specific
 data/
 outputs/
-checkpoints/
 wandb/
 
 # OS
 .DS_Store
 Thumbs.db
+#other
+archive/
+tasks/
+atlas/
+scripts/
