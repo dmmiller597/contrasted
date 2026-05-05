@@ -120,6 +120,12 @@ def _resolve_device(
 # ---------------------------------------------------------------------------
 
 
+def _load_t5_components():
+    from transformers import T5EncoderModel, T5Tokenizer  # lazy
+
+    return T5EncoderModel, T5Tokenizer
+
+
 class ProstT5Encoder:
     """Lazily-loaded ProstT5 wrapper. Holds the model across calls.
 
@@ -142,7 +148,7 @@ class ProstT5Encoder:
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
-        from transformers import T5EncoderModel, T5Tokenizer  # lazy
+        T5EncoderModel, T5Tokenizer = _load_t5_components()
 
         logger.info(f"Loading ProstT5 from: {self.config.model_name}")
         model = T5EncoderModel.from_pretrained(self.config.model_name).to(self._device)
@@ -407,7 +413,7 @@ def run(cfg: DictConfig) -> None:
     logger.info(f"Wrote embedding directory: {out}")
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="embed")
+@hydra.main(version_base=None, config_path="pkg://configs", config_name="embed")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 

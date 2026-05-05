@@ -26,6 +26,7 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from contrasted.checkpoint import load_model_for_inference
 from contrasted.data import (
     EmbeddingStore,
     load_domain_ids_from_fasta,
@@ -484,9 +485,7 @@ def run(cfg: DictConfig) -> None:
         logger.info(f"TM-align enabled, binary: {tmalign_binary}")
 
     logger.info(f"Loading model from: {model_path}")
-    model = ContrastiveModel.load_from_checkpoint(
-        str(model_path), strict=False, weights_only=False
-    )
+    model = load_model_for_inference(model_path)
     model.eval().to(device)
 
     logger.info(f"Loading vector index from: {index_path}")
@@ -601,7 +600,7 @@ def run(cfg: DictConfig) -> None:
             logger.warning("  No sequences were processed")
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="annotate")
+@hydra.main(version_base=None, config_path="pkg://configs", config_name="annotate")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
