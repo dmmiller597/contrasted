@@ -59,6 +59,7 @@ callbacks:
     min_delta: 0.001
   - _target_: lightning.pytorch.callbacks.LearningRateMonitor
   - _target_: contrasted.callbacks.KNNEvaluationCallback
+  - _target_: contrasted.callbacks.HeadExportCallback
 
 hydra:
   run:

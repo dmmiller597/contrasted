@@ -1,4 +1,7 @@
 # @package _global_
 
-# SupCon uses the optimized defaults from train.yaml
-# No overrides needed - all best parameters are set as defaults
+# SupCon-specific overrides
+model:
+  loss:
+    _target_: contrasted.losses.SupConLoss
+    temperature: 0.07
