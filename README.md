@@ -13,7 +13,7 @@ cd contrasted
 uv sync
 ```
 
-`uv sync` installs everything needed for training, embedding, make-db, and annotation, plus the `dev` group (`pytest`, `ruff`, `ty`). Optional extras:
+`uv sync` installs everything needed for annotation, vector database creation, embedding, and training, plus the `dev` group (`pytest`, `ruff`, `ty`). Optional extras:
 
 - `uv sync --extra cloud` -- Modal dependency for the cloud embedding scripts under `scripts/`.
 - `uv sync --extra analysis` -- libraries used by the exploratory scripts under `scripts/` (polars, matplotlib, scipy, umap, etc.).
@@ -35,10 +35,10 @@ Four console scripts are installed with the package:
 
 | Command | Purpose |
 |---|---|
-| `contrasted-train` | Train a model. |
-| `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory. |
-| `contrasted-make-db` | Build a vector database from a checkpoint (accepts FASTA directly). |
 | `contrasted-annotate` | Annotate queries against a vector database (accepts FASTA directly; pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
+| `contrasted-make-db` | Build a vector database from a checkpoint (accepts FASTA directly). |
+| `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory. |
+| `contrasted-train` | Train a model. |
 
 All scripts are Hydra entry points; override any config key on the command line.
 
@@ -69,6 +69,17 @@ Or precompute explicitly:
 uv run contrasted-embed input=queries.fasta output_dir=cache/queries-prostt5
 ```
 
+After `uv sync --extra cloud`, the same ProstT5 implementation (`contrasted.embed`) runs on Modal for large jobs: sharded FASTA, GPU workers, and a Modal Volume for outputs. Example:
+
+```bash
+modal run scripts/embed_prostt5_modal.py \
+  --fasta data/cath-sequence-data/cath-domain-seqs-S35.fa \
+  --labels data/cath-domain-sf-list.txt \
+  --output data/cath-s35-prostt5-modal
+```
+
+Use `--throughput-test` for a short GPU sanity check (Modal booleans are flags, e.g. `--throughput-test`, not `--throughput-test true`).
+
 ### Build a vector database
 
 ```bash
@@ -79,13 +90,6 @@ uv run contrasted-make-db \
 ```
 
 `embedding_dir=<path>` may optionally be set to reuse or cache ProstT5 embeddings for the reference set.
-
-### Train
-
-```bash
-uv run contrasted-train
-uv run contrasted-train +experiment=supcon datamodule.batch_size=512
-```
 
 ## Data Format
 
@@ -101,6 +105,15 @@ Inputs:
 Outputs:
 - `annotations.tsv`: `query_id`, `predicted_annotation`, `distance`, `confidence`
 - `metrics.json`, `selective_curve.tsv` (when `compute_metrics=true` and truth labels are available)
+
+## Training
+
+Most users can start from an existing checkpoint and use `contrasted-make-db` / `contrasted-annotate`. To train a new projection model:
+
+```bash
+uv run contrasted-train
+uv run contrasted-train +experiment=supcon datamodule.batch_size=512
+```
 
 ## Development
 
