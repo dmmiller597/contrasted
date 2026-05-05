@@ -1,11 +1,17 @@
 """Lightning callbacks for training-time evaluation."""
 
+import logging
+from pathlib import Path
+
 import lightning as L
 import torch
 from torch.utils.data import DataLoader
 
+from contrasted.model import ProjectionHead
 from contrasted.search import VectorIndex
 from contrasted.utils import accuracy
+
+logger = logging.getLogger(__name__)
 
 
 class KNNEvaluationCallback(L.Callback):
@@ -98,3 +104,37 @@ class KNNEvaluationCallback(L.Callback):
             return torch.cat(embs, dim=0), torch.cat(labs, dim=0)
         finally:
             pl_module.train(was_training)
+
+
+class HeadExportCallback(L.Callback):
+    """Write the projection head as a standalone artifact at end of training.
+
+    Produces a small file (only the projection head's state_dict + dims) that
+    inference scripts can load without reconstructing the loss module. The
+    artifact is written next to the ``ModelCheckpoint`` directory when one is
+    present, or under ``trainer.default_root_dir`` otherwise.
+    """
+
+    def __init__(self, filename: str = "projection_head.pt"):
+        super().__init__()
+        self.filename = filename
+
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        head = getattr(pl_module, "projection_head", None)
+        if not isinstance(head, ProjectionHead):
+            logger.warning("HeadExportCallback: pl_module has no ProjectionHead")
+            return
+
+        dirpath: Path | None = None
+        ckpt_cb = getattr(trainer, "checkpoint_callback", None)
+        if ckpt_cb is not None and getattr(ckpt_cb, "dirpath", None):
+            dirpath = Path(ckpt_cb.dirpath)
+        elif trainer.default_root_dir:
+            dirpath = Path(trainer.default_root_dir)
+
+        if dirpath is None:
+            logger.warning("HeadExportCallback: no directory available; skipping")
+            return
+
+        out = head.save(dirpath / self.filename)
+        logger.info(f"Exported projection head to: {out}")
