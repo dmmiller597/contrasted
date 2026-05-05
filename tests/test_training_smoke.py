@@ -112,11 +112,15 @@ def test_training_smoke(tmp_path):
         devices=1,
         callbacks=[callback],
         logger=False,
+        default_root_dir=tmp_path / "lightning",
+        enable_checkpointing=False,
         enable_progress_bar=False,
         enable_model_summary=False,
         deterministic=False,
     )
     trainer.fit(model, datamodule=dm)
+
+    assert not list((tmp_path / "lightning").rglob("*.ckpt"))
 
     metrics = trainer.callback_metrics
     assert "train/loss" in metrics
