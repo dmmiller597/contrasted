@@ -8,7 +8,7 @@ method: bayes
 project: contrasted
 name: SupCon_Sweep
 metric:
-  name: val/knn_balanced_accuracy
+  name: val/knn_accuracy
   goal: maximize
 
 # Hyperparameters to search

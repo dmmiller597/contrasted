@@ -3,10 +3,10 @@
 # ProxyAnchor-specific overrides
 
 model:
-  loss_type: proxy_anchor
-  loss_params:
+  loss:
+    _target_: contrasted.losses.ProxyAnchorLoss
+    embedding_dim: ${model.projection_head.output_dim}
+    num_classes: 0
     margin: 0.2
     alpha: 64
-
-learning:
-  lr: 0.001
+  learning_rate: 0.001
