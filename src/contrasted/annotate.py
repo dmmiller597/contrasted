@@ -1,13 +1,13 @@
 """Annotate protein sequences using k-NN search in a vector index.
 
-The pipeline is split into four composable stages:
+The pipeline is split into three composable stages:
 
-1. :func:`project_queries` -- project query embeddings through the trained model.
-2. :func:`knn_vote` -- search the index and aggregate neighbour annotations.
-3. :func:`rerank_with_tmalign` -- (optional) add TM-align structural scores.
-4. :func:`write_predictions_tsv` -- atomically write the results as TSV.
+1. :func:`knn_vote` -- search the index and aggregate neighbour annotations.
+2. :func:`rerank_with_tmalign` -- (optional) add TM-align structural scores.
+3. :func:`write_predictions_tsv` -- atomically write the results as TSV.
 
-:func:`run` composes all four from a Hydra config.
+Queries are projected via :func:`contrasted.model.project`. :func:`run`
+composes everything from a Hydra config.
 """
 
 from __future__ import annotations
@@ -24,17 +24,14 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig
-from tqdm import tqdm
 
-from contrasted.checkpoint import load_model_for_inference
 from contrasted.data import (
-    EmbeddingStore,
     load_domain_ids_from_fasta,
     resolve_fasta_paths,
     resolve_store,
 )
 from contrasted.embed import build_encode_config
-from contrasted.model import ContrastiveModel
+from contrasted.model import ProjectionHead, project
 from contrasted.search import VectorIndex
 from contrasted.tmalign import (
     find_tmalign_binary,
@@ -71,42 +68,7 @@ class Prediction:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: projection
-# ---------------------------------------------------------------------------
-
-
-@torch.inference_mode()
-def project_queries(
-    model: ContrastiveModel,
-    store: EmbeddingStore,
-    domain_ids: list[str],
-    device: torch.device,
-    *,
-    batch_size: int = 2048,
-) -> tuple[torch.Tensor, list[str], list[str]]:
-    """Project queries through the model in chunks.
-
-    Returns ``(vectors, found_ids, missing_ids)``.
-    """
-    model.eval()
-    found_indices, found_ids, missing_ids = store.resolve(domain_ids)
-    if not found_indices:
-        return torch.empty(0, 0), [], missing_ids
-
-    chunks: list[torch.Tensor] = []
-    for i in tqdm(
-        range(0, len(found_indices), batch_size), desc="Projecting", leave=False
-    ):
-        rows = found_indices[i : i + batch_size]
-        raw = np.ascontiguousarray(store.embeddings[rows])
-        batch = torch.as_tensor(raw).float().to(device)
-        chunks.append(model(batch).cpu())
-
-    return torch.cat(chunks, dim=0), found_ids, missing_ids
-
-
-# ---------------------------------------------------------------------------
-# Stage 2: k-NN vote
+# Stage 1: k-NN vote
 # ---------------------------------------------------------------------------
 
 
@@ -256,7 +218,7 @@ def attach_true_annotations(
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: TM-align rerank
+# Stage 2: TM-align rerank
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +270,7 @@ def rerank_with_tmalign(
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: TSV writer
+# Stage 3: TSV writer
 # ---------------------------------------------------------------------------
 
 
@@ -484,9 +446,9 @@ def run(cfg: DictConfig) -> None:
         tmalign_binary = str(binary_path)
         logger.info(f"TM-align enabled, binary: {tmalign_binary}")
 
-    logger.info(f"Loading model from: {model_path}")
-    model = load_model_for_inference(model_path)
-    model.eval().to(device)
+    logger.info(f"Loading projection head from: {model_path}")
+    head = ProjectionHead.load(model_path).to(device)
+    head.eval()
 
     logger.info(f"Loading vector index from: {index_path}")
     index = VectorIndex.load(index_path, device=device)
@@ -523,8 +485,14 @@ def run(cfg: DictConfig) -> None:
 
         start = time.time()
 
-        vectors, found_ids, missing_ids = project_queries(
-            model, store, domain_ids, device, batch_size=batch_size
+        found_indices, found_ids, missing_ids = store.resolve(domain_ids)
+        vectors = project(
+            head,
+            store.embeddings,
+            found_indices,
+            device=device,
+            batch_size=batch_size,
+            desc="Projecting queries",
         )
         predictions = knn_vote(
             vectors,
