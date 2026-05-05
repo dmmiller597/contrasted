@@ -321,11 +321,15 @@ class EmbeddingStore:
             writer(tmp)
             tmp.replace(path / name)
 
+        def _save_npy(path: Path, value, *, allow_pickle: bool = False) -> None:
+            with path.open("wb") as f:
+                np.save(f, value, allow_pickle=allow_pickle)
+
         embeddings = np.ascontiguousarray(self.embeddings)
-        _atomic("embeddings.npy", lambda p: np.save(p, embeddings))
+        _atomic("embeddings.npy", lambda p: _save_npy(p, embeddings))
 
         if self.labels is not None:
-            _atomic("labels.npy", lambda p: np.save(p, np.asarray(self.labels)))
+            _atomic("labels.npy", lambda p: _save_npy(p, np.asarray(self.labels)))
 
         _atomic(
             "ids.txt",
@@ -333,7 +337,7 @@ class EmbeddingStore:
         )
         _atomic(
             "id_to_row.npy",
-            lambda p: np.save(p, dict(self.id_to_idx), allow_pickle=True),
+            lambda p: _save_npy(p, dict(self.id_to_idx), allow_pickle=True),
         )
 
         metadata: dict = {

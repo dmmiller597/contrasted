@@ -30,7 +30,7 @@ def run(cfg: DictConfig) -> None:
     trainer.test(model, datamodule=datamodule, ckpt_path="best")
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="train")
+@hydra.main(version_base=None, config_path="pkg://configs", config_name="train")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 

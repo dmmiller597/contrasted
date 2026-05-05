@@ -9,6 +9,7 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from contrasted.checkpoint import load_model_for_inference
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_store,
@@ -57,9 +58,7 @@ def run(cfg: DictConfig) -> None:
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
 
     logger.info(f"Loading model from: {model_path}")
-    model = ContrastiveModel.load_from_checkpoint(
-        str(model_path), strict=False, weights_only=False
-    )
+    model = load_model_for_inference(model_path)
     model.eval()
     model.to(device)
 
@@ -124,7 +123,7 @@ def run(cfg: DictConfig) -> None:
     index.save(Path(cfg.index_path))
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="make_db")
+@hydra.main(version_base=None, config_path="pkg://configs", config_name="make_db")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
