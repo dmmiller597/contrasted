@@ -4,44 +4,18 @@ import logging
 from pathlib import Path
 
 import hydra
-import numpy as np
-import torch
 from omegaconf import DictConfig
-from tqdm import tqdm
 
-from contrasted.checkpoint import load_model_for_inference
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_store,
 )
 from contrasted.embed import build_encode_config
-from contrasted.model import ContrastiveModel
+from contrasted.model import ProjectionHead, project
 from contrasted.search import VectorIndex
 from contrasted.utils import get_device, load_labels
 
 logger = logging.getLogger(__name__)
-
-
-@torch.no_grad()
-def project_embeddings(
-    model: ContrastiveModel,
-    embeddings: np.ndarray,
-    indices: list[int],
-    device: torch.device,
-    batch_size: int = 4096,
-) -> torch.Tensor:
-    """Project embeddings through trained model."""
-    model.eval()
-    projected = []
-
-    for i in tqdm(range(0, len(indices), batch_size), desc="Projecting"):
-        batch_indices = indices[i : i + batch_size]
-        batch_np = np.asarray(embeddings[batch_indices])
-        batch = torch.from_numpy(batch_np).float().to(device)
-        proj = model(batch).cpu()
-        projected.append(proj)
-
-    return torch.cat(projected, dim=0)
 
 
 def run(cfg: DictConfig) -> None:
@@ -57,10 +31,9 @@ def run(cfg: DictConfig) -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
 
-    logger.info(f"Loading model from: {model_path}")
-    model = load_model_for_inference(model_path)
-    model.eval()
-    model.to(device)
+    logger.info(f"Loading projection head from: {model_path}")
+    head = ProjectionHead.load(model_path).to(device)
+    head.eval()
 
     logger.info(f"Loading sequences from: {input_path}")
     domain_ids = load_domain_ids_from_fasta(input_path)
@@ -87,11 +60,11 @@ def run(cfg: DictConfig) -> None:
     if not indices:
         raise ValueError("No embeddings found for any requested IDs")
 
-    projected = project_embeddings(
-        model,
+    projected = project(
+        head,
         store.embeddings,
         indices,
-        device,
+        device=device,
         batch_size=cfg.get("project_batch_size", 4096),
     )
 
