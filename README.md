@@ -35,61 +35,66 @@ Four console scripts are installed with the package:
 
 | Command | Purpose |
 |---|---|
-| `contrasted-annotate` | Annotate queries against a vector database (accepts FASTA directly; pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
 | `contrasted-make-db` | Build a vector database from a checkpoint (accepts FASTA directly). |
+| `contrasted-annotate` | Annotate queries against a vector database (accepts FASTA directly; pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
 | `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory. |
 | `contrasted-train` | Train a model. |
 
 All scripts are Hydra entry points; override any config key on the command line.
 
-### Annotate a FASTA (one step)
+### Build a vector database
+
+```bash
+uv run contrasted-make-db \
+    input=data/cath-domain-seqs-S100-c123.fasta \
+    model_path=checkpoints/best.ckpt \
+    index_path=data/vector_db/cath-s100-c123.pt \
+    label_file=data/cath-domain-sf-list.txt
+```
+
+`contrasted-make-db` encodes the reference FASTA with ProstT5 in-process, projects the embeddings through the checkpoint, and writes a vector database. `embedding_dir=<path>` may optionally be set to reuse or cache ProstT5 embeddings for the reference set.
+
+### Annotate a FASTA
+
+Once the vector database exists, annotate query domains against it:
 
 ```bash
 uv run contrasted-annotate \
-    input=queries.fasta \
-    model_path=outputs/checkpoints/best.ckpt \
-    index=data/vector_db/train.pt
+    input=data/cath-domain-seqs-S100-c123.fasta \
+    model_path=checkpoints/best.ckpt \
+    index=data/vector_db/cath-s100-c123.pt
 ```
 
-`contrasted-annotate` encodes `queries.fasta` with ProstT5 in-process, projects the embeddings through the checkpoint, and writes the TSV. No preprocessing step required.
+`contrasted-annotate` encodes the query FASTA, projects the embeddings through the checkpoint, searches the vector database, and writes the TSV.
 
 For repeat runs, set `embedding_dir=path/to/cache` -- on-the-fly embeddings are written there once and loaded on subsequent runs:
 
 ```bash
 uv run contrasted-annotate \
-    input=queries.fasta \
-    model_path=outputs/checkpoints/best.ckpt \
-    index=data/vector_db/train.pt \
-    embedding_dir=cache/queries-prostt5
+    input=data/cath-domain-seqs-S100-c123.fasta \
+    model_path=checkpoints/best.ckpt \
+    index=data/vector_db/cath-s100-c123.pt \
+    embedding_dir=cache/cath-s100-c123-prostt5
 ```
 
 Or precompute explicitly:
 
 ```bash
-uv run contrasted-embed input=queries.fasta output_dir=cache/queries-prostt5
+uv run contrasted-embed \
+    input=data/cath-domain-seqs-S100-c123.fasta \
+    output_dir=cache/cath-s100-c123-prostt5
 ```
 
 After `uv sync --extra cloud`, the same ProstT5 implementation (`contrasted.embed`) runs on Modal for large jobs: sharded FASTA, GPU workers, and a Modal Volume for outputs. Example:
 
 ```bash
 modal run scripts/embed_prostt5_modal.py \
-  --fasta data/cath-sequence-data/cath-domain-seqs-S35.fa \
+  --fasta data/cath-domain-seqs-S100-c123.fasta \
   --labels data/cath-domain-sf-list.txt \
-  --output data/cath-s35-prostt5-modal
+  --output data/cath-s100-c123-prostt5-modal
 ```
 
 Use `--throughput-test` for a short GPU sanity check (Modal booleans are flags, e.g. `--throughput-test`, not `--throughput-test true`).
-
-### Build a vector database
-
-```bash
-uv run contrasted-make-db \
-    input=reference.fasta \
-    model_path=outputs/checkpoints/best.ckpt \
-    index_path=data/vector_db/train.pt
-```
-
-`embedding_dir=<path>` may optionally be set to reuse or cache ProstT5 embeddings for the reference set.
 
 ## Data Format
 
