@@ -1,4 +1,4 @@
-input: data/clustered-datasets/train_excl_holdouts66.fasta
+input: data/cath-domain-seqs-S100.fa
 model_path: checkpoints/holdouts66.ckpt
 index_path: data/vector_db/train.pt
 
@@ -8,7 +8,7 @@ index_path: data/vector_db/train.pt
 embedding_dir: null
 
 ids: null
-label_file: null
+label_file: data/cath-domain-sf-list.txt
 project_batch_size: 4096
 dtype: float16
 

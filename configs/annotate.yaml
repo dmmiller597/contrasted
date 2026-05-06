@@ -1,4 +1,4 @@
-input: data/clustered-datasets/test.fasta
+input: data/cath-domain-seqs-S100.fa
 k: 1
 id_to_annotation: data/cath-domain-sf-list.txt
 model_path: checkpoints/holdouts66.ckpt
