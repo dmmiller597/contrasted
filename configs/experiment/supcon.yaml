@@ -1,7 +1,0 @@
-# @package _global_
-
-# SupCon-specific overrides
-model:
-  loss:
-    _target_: contrasted.losses.SupConLoss
-    temperature: 0.07
