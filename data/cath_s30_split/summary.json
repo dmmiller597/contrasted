@@ -1,0 +1,24 @@
+{
+  "params": {
+    "test_size_target": 1000,
+    "val_size_target": 500,
+    "min_seq_id": 0.3,
+    "random_seed": 42,
+    "allowed_classes": [
+      "1",
+      "2",
+      "3"
+    ]
+  },
+  "counts": {
+    "train_sequences": 110791,
+    "val_sequences": 368,
+    "test_sequences": 699,
+    "removed_train_by_identity_or_testval": 10008
+  },
+  "superfamilies": {
+    "train": 5226,
+    "val": 368,
+    "test": 699
+  }
+}

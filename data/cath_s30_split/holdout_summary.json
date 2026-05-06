@@ -1,0 +1,14 @@
+{
+  "params": {
+    "holdout_sf_count": 50,
+    "min_sf_size": 11,
+    "max_sf_size": 99,
+    "random_seed": 42
+  },
+  "counts": {
+    "holdout_sequences": 1457,
+    "holdout_superfamilies": 50,
+    "train_excl_holdouts_sequences": 109334,
+    "eligible_train_only_sfs": 547
+  }
+}
