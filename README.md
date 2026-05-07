@@ -34,11 +34,11 @@ python -m pip install -e .
 Four console scripts are installed with the package:
 
 | Command | Purpose |
-|---|---|
-| `contrasted-make-db` | Build a vector database from a checkpoint (accepts FASTA directly). |
-| `contrasted-annotate` | Annotate queries against a vector database (accepts FASTA directly; pass `compute_metrics=true` to also write a selective-classification curve when truth labels are available). |
-| `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory. |
-| `contrasted-train` | Train a model. |
+|:--------|:--------|
+| `contrasted-make-db` | Build a vector database from a trained checkpoint.<br>Reference sequences can be supplied as FASTA (encoded in-process). |
+| `contrasted-annotate` | Annotate query sequences against a vector index.<br>Queries as FASTA; set `compute_metrics=true` to emit `metrics.json` and `selective_curve.tsv` when ground-truth labels are available. |
+| `contrasted-embed` | Encode a FASTA into a reusable ProstT5 embedding directory (four-file layout). |
+| `contrasted-train` | Train the projection head; Hydra config overrides apply on the CLI. |
 
 All scripts are Hydra entry points; override any config key on the command line.
 
