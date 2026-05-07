@@ -16,8 +16,7 @@ keywords = [
     "pytorch"
 ]
 dependencies = [
-    "torch>=2.0,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "torch>=2.0,<2.6; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch>=2.6,<2.7,
     "lightning>=2.6",
     "numpy>=1.20,<2",
     "hydra-core>=1.3",
