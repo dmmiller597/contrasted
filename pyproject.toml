@@ -26,7 +26,8 @@ dependencies = [
     "tqdm>=4.60",
     # ProstT5 encoder (FASTA -> contrasted annotations runs end-to-end)
     "transformers>=4.40,<5",
-    "sentencepiece>=0.2",
+    # Pinned: 0.2.1+ may publish only manylinux_2_27 wheels (glibc 2.27+). 0.2.0 has
+    "sentencepiece==0.2.0",
 ]
 
 [project.urls]
