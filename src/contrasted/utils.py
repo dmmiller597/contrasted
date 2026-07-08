@@ -9,8 +9,8 @@ import torch
 def set_seed(seed: int = 42, deterministic: bool = True) -> int:
     """Seed every relevant RNG and optionally enable deterministic kernels.
 
-    Wraps :func:`lightning.pytorch.seed_everything` and adds
-    :func:`torch.use_deterministic_algorithms` so CUBLAS kernels raise when
+    Wraps ``lightning.pytorch.seed_everything`` and adds
+    ``torch.use_deterministic_algorithms`` so CUBLAS kernels raise when
     they cannot run deterministically (rather than silently using a
     non-deterministic path).
     """
@@ -43,6 +43,13 @@ def load_labels(
                 sf_to_idx[superfamily] = len(sf_to_idx)
             id_to_sf_idx[domain_id] = sf_to_idx[superfamily]
     return id_to_sf_idx, {v: k for k, v in sf_to_idx.items()}
+
+
+def require_exists(path: Path, description: str) -> Path:
+    """Return ``path`` if it exists, else raise ``FileNotFoundError``."""
+    if not path.exists():
+        raise FileNotFoundError(f"{description} not found: {path}")
+    return path
 
 
 def get_device() -> torch.device:
