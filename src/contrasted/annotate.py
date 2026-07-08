@@ -1,16 +1,14 @@
 """Annotate protein sequences using k-NN search in a vector index.
 
-The pipeline is split into three composable stages:
+The pipeline is a chain of composable stages:
 
-1. :func:`knn_vote` -- search the index and aggregate neighbour annotations.
-2. :func:`rerank_with_tmalign` -- (optional) add TM-align structural scores.
-3. :func:`write_predictions_tsv` -- atomically write the results as TSV.
+1. ``project`` -- project query embeddings through the head.
+2. ``knn_vote`` -- search the index and aggregate neighbour annotations.
+3. ``rerank_with_tmalign`` -- (optional) add TM-align structural scores.
+4. ``write_predictions_tsv`` -- atomically write the results as TSV.
 
-Queries are projected via :func:`contrasted.model.project`. :func:`run`
-composes everything from a Hydra config.
+``run`` composes everything from a Hydra config.
 """
-
-from __future__ import annotations
 
 import csv
 import json
@@ -19,6 +17,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import mean, median
 
 import hydra
 import numpy as np
@@ -38,7 +37,7 @@ from contrasted.tmalign import (
     resolve_structure_path,
     run_tmalign,
 )
-from contrasted.utils import get_device, load_labels
+from contrasted.utils import get_device, load_labels, require_exists
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +88,14 @@ def _build_annotation_tables(
     """
     if index.labels is not None:
         vocab: dict[str, int] = {}
-        arr = np.empty(len(index.labels), dtype=np.int64)
-        for i, label in enumerate(index.labels):
-            if label not in vocab:
-                vocab[label] = len(vocab)
-            arr[i] = vocab[label]
-        decoder = {v: k for k, v in vocab.items()}
-        return arr, decoder
+        arr = np.array(
+            [
+                -1 if label is None else vocab.setdefault(label, len(vocab))
+                for label in index.labels
+            ],
+            dtype=np.int64,
+        )
+        return arr, {v: k for k, v in vocab.items()}
 
     if index.ids is None:
         return np.full(len(index), -1, dtype=np.int64), dict(idx_to_annotation)
@@ -108,9 +108,7 @@ def _build_annotation_tables(
 
 
 def _decode(decoder: dict[int, str], ann_int: int) -> str:
-    if ann_int < 0:
-        return UNKNOWN
-    return decoder.get(ann_int, UNKNOWN)
+    return UNKNOWN if ann_int < 0 else decoder.get(ann_int, UNKNOWN)
 
 
 def _vote(row: np.ndarray) -> tuple[int, int]:
@@ -125,13 +123,13 @@ def _vote(row: np.ndarray) -> tuple[int, int]:
         return -1, 0
     counts = np.bincount(valid)
     max_count = counts.max()
-    # Earliest-occurrence tiebreak: scan the row in order and return the
-    # first annotation whose count equals the max.
+    # Earliest-occurrence tiebreak: scan the row in order (closest neighbour
+    # first) and return the first annotation whose count equals the max. Some
+    # element always matches, so the loop is guaranteed to return.
     for ann in valid:
         if counts[ann] == max_count:
             return int(ann), int(max_count)
-    # Unreachable.
-    return int(valid[0]), int(max_count)
+    raise AssertionError("unreachable: no annotation matched the max count")
 
 
 def knn_vote(
@@ -146,7 +144,7 @@ def knn_vote(
     idx_to_annotation: dict[int, str],
     search_chunk_size: int | None = None,
 ) -> list[Prediction]:
-    """Search the index and aggregate k-NN votes into :class:`Prediction`s.
+    """Search the index and aggregate k-NN votes into ``Prediction``s.
 
     Missing queries are returned with ``predicted_annotation = 'missing_embedding'``;
     queries whose nearest neighbour exceeds ``distance_cutoff`` are returned as
@@ -174,30 +172,18 @@ def knn_vote(
     ann_idx = np.where(
         neighbor_rows_np >= 0, row_to_ann[neighbor_rows_np.clip(min=0)], -1
     )
-    # Mask out neighbours beyond the distance cutoff.
+    # Mask out neighbours beyond the distance cutoff. A query whose nearest
+    # neighbour already exceeds the cutoff has every entry masked to -1, so it
+    # votes to UNKNOWN with confidence 0.0 through the general path below.
     ann_idx = np.where(distances > distance_cutoff, -1, ann_idx)
 
     for j, query_id in enumerate(found_ids):
-        best_distance = float(distances[j, 0])
-
-        if best_distance > distance_cutoff:
-            predictions.append(
-                Prediction(
-                    query_id=query_id,
-                    predicted_annotation=UNKNOWN,
-                    distance=best_distance,
-                    confidence=0.0,
-                    top1_db_idx=int(neighbor_rows_np[j, 0]),
-                )
-            )
-            continue
-
         winner, count = _vote(ann_idx[j])
         predictions.append(
             Prediction(
                 query_id=query_id,
                 predicted_annotation=_decode(decoder, winner),
-                distance=best_distance,
+                distance=float(distances[j, 0]),
                 confidence=count / k if count else 0.0,
                 top1_db_idx=int(neighbor_rows_np[j, 0]),
             )
@@ -211,10 +197,17 @@ def attach_true_annotations(
     id_to_annotation: dict[str, int],
     idx_to_annotation: dict[int, str],
 ) -> None:
-    """Populate ``Prediction.true_annotation`` in place from the label tables."""
+    """Populate ``Prediction.true_annotation`` in place from the label tables.
+
+    Queries absent from ``id_to_annotation`` get ``true_annotation = None`` so
+    metrics can exclude them rather than treating missing truth as the
+    prediction sentinel ``"unknown"``.
+    """
     for p in predictions:
-        true_idx = id_to_annotation.get(p.query_id, -1)
-        p.true_annotation = idx_to_annotation.get(true_idx, UNKNOWN)
+        true_idx = id_to_annotation.get(p.query_id)
+        p.true_annotation = (
+            idx_to_annotation.get(true_idx) if true_idx is not None else None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +267,34 @@ def rerank_with_tmalign(
 # ---------------------------------------------------------------------------
 
 
+def _format_optional(value: object | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _active_columns(
+    *,
+    return_true_annotation: bool,
+    return_distance: bool,
+    return_confidence: bool,
+    include_tmalign: bool,
+) -> list[str]:
+    """Output TSV column names, in order.
+
+    Each name is also a ``Prediction`` attribute, so the same list drives
+    both the header row and per-prediction value lookup (keeping them in sync).
+    """
+    columns = ["query_id", "predicted_annotation"]
+    if return_true_annotation:
+        columns.append("true_annotation")
+    if return_distance:
+        columns.append("distance")
+    if return_confidence:
+        columns.append("confidence")
+    if include_tmalign:
+        columns += ["tm_score", "rmsd", "tm_coverage"]
+    return columns
+
+
 def write_predictions_tsv(
     predictions: list[Prediction],
     output_path: Path,
@@ -284,15 +305,12 @@ def write_predictions_tsv(
     include_tmalign: bool = False,
 ) -> None:
     """Atomically write predictions to a TSV at ``output_path``."""
-    headers = ["query_id", "predicted_annotation"]
-    if return_true_annotation:
-        headers.append("true_annotation")
-    if return_distance:
-        headers.append("distance")
-    if return_confidence:
-        headers.append("confidence")
-    if include_tmalign:
-        headers.extend(["tm_score", "rmsd", "tm_coverage"])
+    columns = _active_columns(
+        return_true_annotation=return_true_annotation,
+        return_distance=return_distance,
+        return_confidence=return_confidence,
+        include_tmalign=include_tmalign,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_name = tempfile.mkstemp(
@@ -302,24 +320,11 @@ def write_predictions_tsv(
     try:
         with open(tmp_fd, "w", newline="") as f:
             writer = csv.writer(f, delimiter="\t")
-            writer.writerow(headers)
+            writer.writerow(columns)
             for p in predictions:
-                row = [p.query_id, p.predicted_annotation]
-                if return_true_annotation:
-                    row.append(p.true_annotation or UNKNOWN)
-                if return_distance:
-                    row.append("" if p.distance is None else f"{p.distance}")
-                if return_confidence:
-                    row.append("" if p.confidence is None else f"{p.confidence}")
-                if include_tmalign:
-                    row.extend(
-                        [
-                            "" if p.tm_score is None else f"{p.tm_score}",
-                            "" if p.rmsd is None else f"{p.rmsd}",
-                            "" if p.tm_coverage is None else f"{p.tm_coverage}",
-                        ]
-                    )
-                writer.writerow(row)
+                writer.writerow(
+                    [_format_optional(getattr(p, name)) for name in columns]
+                )
         tmp_path.replace(output_path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
@@ -332,22 +337,26 @@ def write_predictions_tsv(
 
 
 def summarize(predictions: list[Prediction]) -> dict:
-    """Compute counts/confidences summary for a list of predictions."""
-    unknown = sum(1 for p in predictions if p.predicted_annotation == UNKNOWN)
-    missing = sum(1 for p in predictions if p.predicted_annotation == MISSING_EMBEDDING)
-    annotated = len(predictions) - unknown - missing
-    confidences = [
-        p.confidence
-        for p in predictions
-        if p.confidence is not None
-        and p.predicted_annotation not in {UNKNOWN, MISSING_EMBEDDING}
-    ]
+    """Compute counts and confidence summary stats for a list of predictions."""
+    unknown = missing = 0
+    confidences: list[float] = []
+    for p in predictions:
+        ann = p.predicted_annotation
+        if ann == UNKNOWN:
+            unknown += 1
+        elif ann == MISSING_EMBEDDING:
+            missing += 1
+        elif p.confidence is not None:
+            confidences.append(p.confidence)
+    total = len(predictions)
+    annotated = total - unknown - missing
     return {
-        "total": len(predictions),
+        "total": total,
         "annotated": annotated,
         "unknown": unknown,
         "missing": missing,
-        "confidences": confidences,
+        "mean_confidence": mean(confidences) if confidences else 0.0,
+        "median_confidence": median(confidences) if confidences else 0.0,
     }
 
 
@@ -370,8 +379,7 @@ def compute_metrics(predictions: list[Prediction]) -> dict[str, float]:
     ]
     if not pairs:
         return {"accuracy": 0.0}
-
-    correct = sum(1 for p, t in pairs if p == t)
+    correct = sum(pred == true for pred, true in pairs)
     return {"accuracy": correct / len(pairs)}
 
 
@@ -380,9 +388,11 @@ def selective_curve(
 ) -> list[tuple[float, float, float]]:
     """Accuracy vs. coverage as the distance threshold sweeps [min, max].
 
-    Coverage is over *non-missing* queries; accuracy is over queries whose
-    top-1 distance is below the threshold (including ``unknown`` assignments,
-    which count as wrong when a truth label is known).
+    The denominator for both metrics is the set of queries that have *both* a
+    top-1 distance and a known truth annotation (queries missing either are
+    excluded). Coverage at threshold ``t`` is the fraction of that set with
+    distance <= ``t``; accuracy is over that covered subset, counting
+    ``unknown`` assignments as wrong.
     """
     rows = [
         (p.distance, p.predicted_annotation == p.true_annotation)
@@ -391,16 +401,61 @@ def selective_curve(
     ]
     if not rows:
         return []
-    distances = np.asarray([r[0] for r in rows], dtype=np.float64)
-    correct = np.asarray([r[1] for r in rows], dtype=bool)
+    distances = np.fromiter((r[0] for r in rows), dtype=np.float64, count=len(rows))
+    correct = np.fromiter((r[1] for r in rows), dtype=bool, count=len(rows))
     thresholds = np.linspace(distances.min(), distances.max(), num_thresholds)
-    out: list[tuple[float, float, float]] = []
-    for t in thresholds:
-        mask = distances <= t
-        coverage = float(mask.mean())
-        acc = float(correct[mask].mean()) if mask.any() else 0.0
-        out.append((float(t), coverage, acc))
-    return out
+    covered = distances[:, None] <= thresholds[None, :]
+    n_covered = covered.sum(axis=0)
+    coverage = n_covered / len(distances)
+    acc = np.divide(
+        (correct[:, None] & covered).sum(axis=0),
+        n_covered,
+        out=np.zeros_like(coverage, dtype=np.float64),
+        where=n_covered > 0,
+    )
+    return [
+        (float(t), float(c), float(a))
+        for t, c, a in zip(thresholds, coverage, acc, strict=True)
+    ]
+
+
+def write_metrics_and_curve(
+    predictions: list[Prediction],
+    output_dir: Path,
+    input_name: str,
+    *,
+    num_thresholds: int = 50,
+) -> dict[str, float]:
+    """Write ``{input_name}`` metrics.json + selective_curve.tsv; return the metrics."""
+    metrics = compute_metrics(predictions)
+    (output_dir / f"{input_name}_metrics.json").write_text(
+        json.dumps(metrics, indent=2)
+    )
+    curve_path = output_dir / f"{input_name}_selective_curve.tsv"
+    with open(curve_path, "w", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(["threshold", "coverage", "accuracy"])
+        writer.writerows(selective_curve(predictions, num_thresholds=num_thresholds))
+    return metrics
+
+
+def log_summary(output_path: Path, summary: dict, elapsed: float) -> None:
+    """Log the per-input annotation counts and timing."""
+    total = summary["total"]
+    logger.info(f"Saved annotations to: {output_path}")
+    logger.info(f"  Total: {total}")
+    if total == 0:
+        logger.warning("  No sequences were processed")
+        return
+    annotated, unknown = summary["annotated"], summary["unknown"]
+    logger.info(f"  Annotated: {annotated} ({100 * annotated / total:.1f}%)")
+    logger.info(f"  Unknown: {unknown} ({100 * unknown / total:.1f}%)")
+    logger.info(f"  Missing: {summary['missing']}")
+    logger.info(
+        f"  Confidence (annotated): mean={summary['mean_confidence']:.3f} "
+        f"median={summary['median_confidence']:.3f}"
+    )
+    logger.info(f"  Time: {elapsed:.2f}s ({elapsed / total * 1000:.2f}ms per query)")
 
 
 # ---------------------------------------------------------------------------
@@ -423,14 +478,10 @@ def run(cfg: DictConfig) -> None:
     input_paths = resolve_fasta_paths(input_path)
     if not input_paths:
         raise FileNotFoundError(f"No FASTA files found at: {input_path}")
-    for path, name in [
-        (model_path, "Model checkpoint"),
-        (index_path, "Vector index"),
-    ]:
-        if not path.exists():
-            raise FileNotFoundError(f"{name} not found: {path}")
-    if annotation_path and not annotation_path.exists():
-        raise FileNotFoundError(f"Annotation file not found: {annotation_path}")
+    require_exists(model_path, "Model checkpoint")
+    require_exists(index_path, "Vector index")
+    if annotation_path:
+        require_exists(annotation_path, "Annotation file")
 
     tm_align_enabled = bool(cfg.get("tm_align", False))
     structure_dir = Path(cfg.structure_dir) if cfg.get("structure_dir") else None
@@ -440,10 +491,9 @@ def run(cfg: DictConfig) -> None:
             raise ValueError("structure_dir must be set when tm_align=true")
         if not structure_dir.is_dir():
             raise FileNotFoundError(f"Structure directory not found: {structure_dir}")
-        binary_path = find_tmalign_binary(
-            tmalign_binary if tmalign_binary != "TMalign" else None
+        tmalign_binary = str(
+            find_tmalign_binary(None if tmalign_binary == "TMalign" else tmalign_binary)
         )
-        tmalign_binary = str(binary_path)
         logger.info(f"TM-align enabled, binary: {tmalign_binary}")
 
     logger.info(f"Loading projection head from: {model_path}")
@@ -461,6 +511,20 @@ def run(cfg: DictConfig) -> None:
     else:
         id_to_annotation, idx_to_annotation = {}, {}
 
+    # A usable annotation source is required: either the index carries labels,
+    # or it carries ids that can be joined against a supplied annotation file.
+    # Without one, every query would silently resolve to "unknown".
+    has_annotation_source = index.labels is not None or (
+        index.ids is not None and annotation_path is not None
+    )
+    if not has_annotation_source:
+        raise ValueError(
+            "No annotation source: the index has no labels, and no "
+            "id_to_annotation file was supplied to join against index ids "
+            "(or the index has no ids). Rebuild the index with labels or pass "
+            "id_to_annotation=<file>."
+        )
+
     output_dir = Path(cfg.get("output_dir", "outputs/annotations"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -477,6 +541,14 @@ def run(cfg: DictConfig) -> None:
     search_chunk_size = cfg.get("search_chunk_size")
     k = int(cfg.k)
     distance_cutoff = float(cfg.distance_cutoff)
+
+    # Loop-invariant: truth annotations are only attached/written when both
+    # requested and a label file was supplied.
+    return_true_annotation = bool(
+        cfg.get("return_true_annotation", True) and annotation_path
+    )
+    compute_metrics_enabled = bool(cfg.get("compute_metrics", False))
+    num_thresholds = int(cfg.get("num_thresholds", 50))
 
     for input_name, fasta_path in input_paths.items():
         logger.info(f"Processing: {input_name} ({fasta_path})")
@@ -506,9 +578,6 @@ def run(cfg: DictConfig) -> None:
             search_chunk_size=search_chunk_size,
         )
 
-        return_true_annotation = bool(
-            cfg.get("return_true_annotation", True) and annotation_path
-        )
         if return_true_annotation:
             attach_true_annotations(predictions, id_to_annotation, idx_to_annotation)
         if tm_align_enabled and structure_dir is not None:
@@ -530,42 +599,13 @@ def run(cfg: DictConfig) -> None:
             include_tmalign=tm_align_enabled,
         )
 
-        # Emit metrics + selective curve when truth labels are available.
-        if cfg.get("compute_metrics", False) and return_true_annotation:
-            metrics = compute_metrics(predictions)
-            (output_dir / f"{input_name}_metrics.json").write_text(
-                json.dumps(metrics, indent=2)
+        if compute_metrics_enabled and return_true_annotation:
+            metrics = write_metrics_and_curve(
+                predictions, output_dir, input_name, num_thresholds=num_thresholds
             )
-            curve_path = output_dir / f"{input_name}_selective_curve.tsv"
-            with open(curve_path, "w", newline="") as f:
-                w = csv.writer(f, delimiter="\t")
-                w.writerow(["threshold", "coverage", "accuracy"])
-                for row in selective_curve(
-                    predictions, num_thresholds=cfg.get("num_thresholds", 50)
-                ):
-                    w.writerow(row)
             logger.info(f"Metrics: {metrics}")
 
-        elapsed = time.time() - start
-        summary = summarize(predictions)
-        total = summary["total"]
-        logger.info(f"Saved annotations to: {output_path}")
-        logger.info(f"  Total: {total}")
-        if total > 0:
-            logger.info(
-                f"  Annotated: {summary['annotated']} "
-                f"({100 * summary['annotated'] / total:.1f}%)"
-            )
-            logger.info(
-                f"  Unknown: {summary['unknown']} "
-                f"({100 * summary['unknown'] / total:.1f}%)"
-            )
-            logger.info(f"  Missing: {summary['missing']}")
-            logger.info(
-                f"  Time: {elapsed:.2f}s ({elapsed / total * 1000:.2f}ms per query)"
-            )
-        else:
-            logger.warning("  No sequences were processed")
+        log_summary(output_path, summarize(predictions), time.time() - start)
 
 
 @hydra.main(version_base=None, config_path="pkg://configs", config_name="annotate")
