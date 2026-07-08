@@ -22,16 +22,9 @@ class TMAlignResult:
 
 
 def find_tmalign_binary(path: str | None = None) -> Path:
-    """Locate the TMalign binary.
+    """Locate the TMalign binary at an explicit ``path`` or on ``PATH``.
 
-    Args:
-        path: Explicit path to the binary, or None to search PATH.
-
-    Returns:
-        Path to the TMalign binary.
-
-    Raises:
-        FileNotFoundError: If the binary cannot be found.
+    Raises ``FileNotFoundError`` if it cannot be found.
     """
     if path is not None:
         p = Path(path)
@@ -56,30 +49,30 @@ _RE_TM_SCORE_CHAIN1 = re.compile(
 _RE_LENGTH_CHAIN1 = re.compile(r"Length of Chain_1:\s*(\d+)\s+residues")
 
 
+def _required_match(
+    pattern: re.Pattern[str], stdout: str, description: str
+) -> re.Match[str]:
+    match = pattern.search(stdout)
+    if match is None:
+        raise ValueError(
+            f"Could not parse {description} from TMalign output:\n{stdout}"
+        )
+    return match
+
+
 def _parse_tmalign_output(stdout: str) -> TMAlignResult:
-    """Parse TMalign stdout into a TMAlignResult.
+    """Parse TMalign stdout into a ``TMAlignResult``.
 
-    Raises:
-        ValueError: If required fields cannot be parsed from the output.
+    Raises ``ValueError`` if a required field is missing from the output.
     """
-    m_aligned = _RE_ALIGNED.search(stdout)
-    if not m_aligned:
-        msg = "Could not parse aligned length/RMSD from TMalign output"
-        raise ValueError(f"{msg}:\n{stdout}")
-
+    m_aligned = _required_match(_RE_ALIGNED, stdout, "aligned length/RMSD")
     aligned_length = int(m_aligned.group(1))
     rmsd = float(m_aligned.group(2))
 
-    m_tm = _RE_TM_SCORE_CHAIN1.search(stdout)
-    if not m_tm:
-        msg = "Could not parse TM-score (Chain_1) from TMalign output"
-        raise ValueError(f"{msg}:\n{stdout}")
+    m_tm = _required_match(_RE_TM_SCORE_CHAIN1, stdout, "TM-score (Chain_1)")
     tm_score = float(m_tm.group(1))
 
-    m_len = _RE_LENGTH_CHAIN1.search(stdout)
-    if not m_len:
-        msg = "Could not parse Chain_1 length from TMalign output"
-        raise ValueError(f"{msg}:\n{stdout}")
+    m_len = _required_match(_RE_LENGTH_CHAIN1, stdout, "Chain_1 length")
     query_length = int(m_len.group(1))
 
     coverage = aligned_length / query_length if query_length > 0 else 0.0
@@ -98,19 +91,10 @@ def run_tmalign(
     target_structure: Path,
     binary: str = "TMalign",
 ) -> TMAlignResult:
-    """Run TMalign on two structures and parse the result.
+    """Align ``query_structure`` against ``target_structure`` and parse the result.
 
-    Args:
-        query_structure: Path to the query PDB/mmCIF file.
-        target_structure: Path to the target PDB/mmCIF file.
-        binary: Path or name of the TMalign binary.
-
-    Returns:
-        Parsed TMAlignResult.
-
-    Raises:
-        RuntimeError: If TMalign exits with a non-zero return code.
-        ValueError: If the output cannot be parsed.
+    Both paths point to PDB/mmCIF files. Raises ``RuntimeError`` if TMalign
+    exits non-zero, or ``ValueError`` if its output cannot be parsed.
     """
     result = subprocess.run(
         [binary, str(query_structure), str(target_structure)],
@@ -129,16 +113,9 @@ _STRUCTURE_EXTENSIONS = [".pdb", ".cif", ".pdb.gz", ".cif.gz", ".ent", ".ent.gz"
 
 
 def resolve_structure_path(domain_id: str, structure_dir: Path) -> Path | None:
-    """Find a structure file for a domain ID.
+    """Find a structure file for ``domain_id`` in ``structure_dir``, or ``None``.
 
-    Tries common extensions: .pdb, .cif, .pdb.gz, .cif.gz, .ent, .ent.gz
-
-    Args:
-        domain_id: The domain identifier.
-        structure_dir: Directory containing structure files.
-
-    Returns:
-        Path to the structure file, or None if not found.
+    Tries extensions .pdb, .cif, .pdb.gz, .cif.gz, .ent, .ent.gz in order.
     """
     for ext in _STRUCTURE_EXTENSIONS:
         candidate = structure_dir / f"{domain_id}{ext}"
