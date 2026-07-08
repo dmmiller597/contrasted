@@ -33,7 +33,7 @@ class KNNEvaluationCallback(L.Callback):
             or trainer.current_epoch % self.eval_every_n_epochs != 0
         ):
             return
-        dm = trainer.datamodule
+        dm = getattr(trainer, "datamodule", None)
         if dm is None:
             return
         acc = self._evaluate(pl_module, dm.train_dataset, dm.val_dataset, dm.batch_size)
@@ -44,7 +44,7 @@ class KNNEvaluationCallback(L.Callback):
     def on_test_epoch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule
     ) -> None:
-        dm = trainer.datamodule
+        dm = getattr(trainer, "datamodule", None)
         if dm is None:
             return
         if getattr(dm, "test_datasets", None):
@@ -74,8 +74,8 @@ class KNNEvaluationCallback(L.Callback):
         query_embs, query_labs = self._collect_embeddings(
             pl_module, query_dataset, batch_size
         )
-        neighbor_idx = index.search(query_embs, k=1)[1].squeeze(1).cpu()
-        preds = train_labs[neighbor_idx]
+        _, neighbor_idx = index.search(query_embs, k=1)
+        preds = train_labs[neighbor_idx.squeeze(1).cpu()]
         return accuracy(preds, query_labs)
 
     @torch.inference_mode()
@@ -126,8 +126,9 @@ class HeadExportCallback(L.Callback):
             return
 
         dirpath: Path | None = None
-        ckpt_cb = getattr(trainer, "checkpoint_callback", None)
-        if ckpt_cb is not None and getattr(ckpt_cb, "dirpath", None):
+        if (ckpt_cb := getattr(trainer, "checkpoint_callback", None)) and getattr(
+            ckpt_cb, "dirpath", None
+        ):
             dirpath = Path(ckpt_cb.dirpath)
         elif trainer.default_root_dir:
             dirpath = Path(trainer.default_root_dir)
@@ -136,5 +137,17 @@ class HeadExportCallback(L.Callback):
             logger.warning("HeadExportCallback: no directory available; skipping")
             return
 
-        out = head.save(dirpath / self.filename)
+        head_to_export = head
+        if (
+            best_path := getattr(ckpt_cb, "best_model_path", None) if ckpt_cb else None
+        ) and (best_path := Path(best_path)).is_file():
+            head_to_export = ProjectionHead.load(best_path)
+        elif best_path:
+            logger.warning(
+                "HeadExportCallback: best checkpoint missing at %s; "
+                "exporting in-memory head",
+                best_path,
+            )
+
+        out = head_to_export.save(dirpath / self.filename)
         logger.info(f"Exported projection head to: {out}")
