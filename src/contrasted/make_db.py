@@ -13,9 +13,26 @@ from contrasted.data import (
 from contrasted.embed import build_encode_config
 from contrasted.model import ProjectionHead, project
 from contrasted.search import VectorIndex
-from contrasted.utils import get_device, load_labels
+from contrasted.utils import get_device, load_labels, require_exists
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_labels(
+    domain_ids: list[str],
+    id_to_label: dict[str, int],
+    idx_to_label: dict[int, str],
+) -> list[str | None]:
+    """Map domain IDs to their label strings; ``None`` for domains without one.
+
+    Unlabeled domains stay type-distinct from real labels — including a genuine
+    superfamily literally named ``"unknown"`` — so they can be excluded from
+    k-NN voting rather than masquerading as a votable class.
+    """
+    return [
+        idx_to_label[id_to_label[domain_id]] if domain_id in id_to_label else None
+        for domain_id in domain_ids
+    ]
 
 
 def run(cfg: DictConfig) -> None:
@@ -26,10 +43,8 @@ def run(cfg: DictConfig) -> None:
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input FASTA not found: {input_path}")
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    require_exists(input_path, "Input FASTA")
+    require_exists(model_path, "Model checkpoint")
 
     logger.info(f"Loading projection head from: {model_path}")
     head = ProjectionHead.load(model_path).to(device)
@@ -72,23 +87,17 @@ def run(cfg: DictConfig) -> None:
         f"Generated {projected.shape[0]} embeddings of dimension {projected.shape[1]}"
     )
 
-    label_path = Path(cfg.label_file) if cfg.get("label_file") else None
-    labels = None
-    if label_path:
-        if not label_path.exists():
-            raise FileNotFoundError(f"Label file not found: {label_path}")
+    labels: list[str | None] | None = None
+    if label_file := cfg.get("label_file"):
+        label_path = require_exists(Path(label_file), "Label file")
         id_to_label, idx_to_label = load_labels(label_path)
-        labels = [
-            idx_to_label.get(id_to_label.get(domain_id, -1), "unknown")
-            for domain_id in domain_ids
-        ]
-        n_unknown = sum(1 for label in labels if label == "unknown")
-        if n_unknown > 0:
+        labels = resolve_labels(domain_ids, id_to_label, idx_to_label)
+        if n_unlabeled := sum(1 for label in labels if label is None):
             logger.warning(
-                f"{n_unknown}/{len(labels)} domains have no label in "
-                f"{label_path} and will be labeled 'unknown'"
+                f"{n_unlabeled}/{len(labels)} domains have no label in "
+                f"{label_path} and will be stored unlabeled (excluded from voting)"
             )
-        logger.info(f"Loaded labels for {len(labels)} domains")
+        logger.info(f"Loaded labels for {len(labels) - n_unlabeled} domains")
 
     if cfg.get("dtype", "float32") == "float16":
         projected = projected.half()
