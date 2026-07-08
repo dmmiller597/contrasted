@@ -137,14 +137,10 @@ def project(
     Returns a CPU tensor of shape ``(len(rows), head.output_dim)``.
     """
     head.eval()
-    rows: Sequence[int]
-    if indices is None:
-        rows = range(len(embeddings))
-    else:
-        rows = indices
+    rows: Sequence[int] = range(len(embeddings)) if indices is None else indices
     n = len(rows)
     if n == 0:
-        return torch.empty(0, 0)
+        return torch.empty(0, getattr(head, "output_dim", 0))
 
     chunks: list[torch.Tensor] = []
     for i in tqdm(range(0, n, batch_size), desc=desc, leave=False):
