@@ -22,7 +22,7 @@ def run(cfg: DictConfig) -> None:
 
     model = instantiate(cfg.model)
 
-    logger = instantiate(cfg.logger)
+    logger = instantiate(cfg.logger) if cfg.get("logger") else False
     callbacks = [instantiate(cb) for cb in cfg.callbacks]
     trainer = L.Trainer(logger=logger, callbacks=callbacks, **cfg.trainer)
 
