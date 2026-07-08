@@ -1,11 +1,15 @@
 """Unit tests for the annotation pipeline helpers."""
 
+import pytest
 import torch
 
 from contrasted.annotate import (
     MISSING_EMBEDDING,
     UNKNOWN,
     Prediction,
+    _build_annotation_tables,
+    attach_true_annotations,
+    compute_metrics,
     knn_vote,
     summarize,
     write_predictions_tsv,
@@ -126,4 +130,154 @@ def test_summarize_counts():
     assert s["annotated"] == 1
     assert s["unknown"] == 1
     assert s["missing"] == 1
-    assert s["confidences"] == [1.0]
+    # Confidence stats are over annotated preds only (the lone "X" at 1.0).
+    assert s["mean_confidence"] == 1.0
+    assert s["median_confidence"] == 1.0
+
+
+def test_summarize_confidence_stats_empty():
+    # No annotated predictions -> stats fall back to 0.0 (no statistics error).
+    preds = [Prediction(query_id="b", predicted_annotation=UNKNOWN, confidence=0.0)]
+    s = summarize(preds)
+    assert s["annotated"] == 0
+    assert s["mean_confidence"] == 0.0
+    assert s["median_confidence"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Unlabeled reference rows (None) must not vote or collide with the sentinel
+# ---------------------------------------------------------------------------
+
+
+def test_build_annotation_tables_none_vs_real_unknown():
+    # None -> -1 (cannot vote); a real superfamily literally named "unknown"
+    # stays a genuine, decodable class.
+    index = VectorIndex(
+        torch.randn(3, 4), ids=["a", "b", "c"], labels=["unknown", None, "B"]
+    )
+    row_to_ann, decoder = _build_annotation_tables(index, {}, {})
+    assert row_to_ann[1] == -1
+    assert row_to_ann[0] >= 0
+    assert decoder[int(row_to_ann[0])] == "unknown"
+    assert decoder[int(row_to_ann[2])] == "B"
+    assert None not in decoder.values()
+
+
+def test_unlabeled_db_rows_do_not_vote():
+    # Three neighbours near the query: two unlabeled (None), one labeled "B".
+    # The single labeled neighbour must win; the None rows form no class.
+    embs = torch.tensor([[1.0, 0.0, 0.0], [0.99, 0.01, 0.0], [0.98, 0.02, 0.0]])
+    index = VectorIndex(embs, ids=["u0", "u1", "b0"], labels=[None, None, "B"])
+    preds = knn_vote(
+        torch.tensor([[1.0, 0.0, 0.0]]),
+        ["q"],
+        [],
+        index,
+        k=3,
+        distance_cutoff=1.0,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+    assert preds[0].predicted_annotation == "B"
+    # Only 1 of k=3 neighbours is labeled.
+    assert preds[0].confidence == pytest.approx(1 / 3)
+
+
+def test_all_unlabeled_neighbours_resolve_unknown():
+    embs = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    index = VectorIndex(embs, ids=["u0", "u1"], labels=[None, None])
+    preds = knn_vote(
+        torch.tensor([[1.0, 0.0]]),
+        ["q"],
+        [],
+        index,
+        k=2,
+        distance_cutoff=1.0,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+    assert preds[0].predicted_annotation == UNKNOWN
+    assert preds[0].confidence == 0.0
+
+
+def test_real_unknown_label_still_votes():
+    embs = torch.tensor([[1.0, 0.0], [0.99, 0.01]])
+    index = VectorIndex(embs, ids=["x0", "x1"], labels=["unknown", "unknown"])
+    preds = knn_vote(
+        torch.tensor([[1.0, 0.0]]),
+        ["q"],
+        [],
+        index,
+        k=2,
+        distance_cutoff=1.0,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+    # The real label wins by actual voting (full confidence), not by falling
+    # through to the no-neighbour sentinel path (which yields confidence 0.0).
+    assert preds[0].predicted_annotation == "unknown"
+    assert preds[0].confidence == 1.0
+    assert preds[0].distance is not None
+
+
+def test_metrics_do_not_conflate_unlabeled_reference_votes():
+    # DB: a labeled "A" cluster plus an unlabeled cluster.
+    embs = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.99, 0.01, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.99, 0.01],
+        ]
+    )
+    index = VectorIndex(
+        embs, ids=["a0", "a1", "u0", "u1"], labels=["A", "A", None, None]
+    )
+    # q_a matches the A cluster; q_u matches only unlabeled rows.
+    queries = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    id_to_ann = {"q_a": 0, "q_u": 0}
+    idx_to_ann = {0: "A"}
+    preds = knn_vote(
+        queries,
+        ["q_a", "q_u"],
+        [],
+        index,
+        k=2,
+        distance_cutoff=1.0,
+        id_to_annotation=id_to_ann,
+        idx_to_annotation=idx_to_ann,
+    )
+    attach_true_annotations(preds, id_to_ann, idx_to_ann)
+    by_id = {p.query_id: p for p in preds}
+    assert by_id["q_a"].predicted_annotation == "A"
+    assert by_id["q_u"].predicted_annotation == UNKNOWN  # no labeled neighbour
+
+    # q_a is a correct annotation; q_u is excluded (not scored as a wrong "A").
+    assert compute_metrics(preds) == {"accuracy": 1.0}
+    s = summarize(preds)
+    assert s["annotated"] == 1
+    assert s["unknown"] == 1
+
+
+def test_partial_truth_excludes_queries_without_labels():
+    preds = [
+        Prediction(
+            query_id="labeled",
+            predicted_annotation="A",
+            true_annotation=None,
+        ),
+        Prediction(
+            query_id="unlabeled",
+            predicted_annotation="B",
+            true_annotation=None,
+        ),
+    ]
+    id_to_ann = {"labeled": 0}
+    idx_to_ann = {0: "A"}
+    attach_true_annotations(preds, id_to_ann, idx_to_ann)
+
+    by_id = {p.query_id: p for p in preds}
+    assert by_id["labeled"].true_annotation == "A"
+    assert by_id["unlabeled"].true_annotation is None
+
+    assert compute_metrics(preds) == {"accuracy": 1.0}
