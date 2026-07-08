@@ -17,7 +17,15 @@ from contrasted.embed import (
     EncodeConfig,
     ProstT5Encoder,
     _build_batches,
+    _format_sequence,
 )
+
+
+def test_format_sequence_uppercases_and_masks_non_standard():
+    # Lower-case (soft-masked) residues must be up-cased, and U/Z/O/B mapped
+    # to X, so nothing tokenizes to <unk>.
+    out = _format_sequence("mseUzObG")
+    assert out == "<AA2fold> M S E X X X X G"
 
 
 def test_build_batches_flushes_on_max_batch():
@@ -57,6 +65,20 @@ def test_read_fasta_sequences_drops_duplicates():
         path = Path(f.name)
     seqs = read_fasta_sequences(path)
     assert seqs == {"aaaA01": "MVL"}
+
+
+def test_read_fasta_sequences_rejects_header_only(tmp_path):
+    fasta = tmp_path / "empty.fasta"
+    fasta.write_text(">cath|1|aaaA01/1-3\n")
+    with pytest.raises(ValueError, match="no residues"):
+        read_fasta_sequences(fasta)
+
+
+def test_read_fasta_sequences_rejects_gap_only(tmp_path):
+    fasta = tmp_path / "gaps.fasta"
+    fasta.write_text(">cath|1|bbbB01/1-5\n----\n")
+    with pytest.raises(ValueError, match="no residues"):
+        read_fasta_sequences(fasta)
 
 
 # ---------------------------------------------------------------------------
