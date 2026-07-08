@@ -2,15 +2,13 @@
 
 The public API is intentionally small:
 
-- :class:`EncodeConfig` -- tunable batching / precision knobs.
-- :class:`ProstT5Encoder` -- loads the model lazily; ``encode`` a dict of
+- ``EncodeConfig`` -- tunable batching / precision knobs.
+- ``ProstT5Encoder`` -- loads the model lazily; ``encode`` a dict of
   ``{id: sequence}`` -> ``{id: (1024,) ndarray}``.
-- :func:`encode_fasta` -- FASTA path(s) -> :class:`EmbeddingStore`.
-- :func:`encode_fasta_to_dir` -- FASTA path(s) -> persisted embedding dir.
-- :func:`main` -- Hydra entrypoint for ``contrasted-embed``.
+- ``encode_fasta`` -- FASTA path(s) -> ``EmbeddingStore``.
+- ``encode_fasta_to_dir`` -- FASTA path(s) -> persisted embedding dir.
+- ``main`` -- Hydra entrypoint for ``contrasted-embed``.
 """
-
-from __future__ import annotations
 
 import logging
 import time
@@ -25,8 +23,13 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from contrasted.data import EmbeddingStore, read_fasta_sequences
-from contrasted.utils import get_device, load_labels
+from contrasted.data import (
+    CANONICAL_EMBEDDING_FILES,
+    EmbeddingStore,
+    read_fasta_sequences,
+    resolve_fasta_paths,
+)
+from contrasted.utils import get_device, load_labels, require_exists
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -37,7 +40,7 @@ PROSTT5_MODEL = "Rostlab/ProstT5"
 PROSTT5_PREFIX = "<AA2fold>"
 PROSTT5_DIM = 1024
 
-_NON_STANDARD_AA = str.maketrans({"U": "X", "Z": "X", "O": "X"})
+_NON_STANDARD_AA = str.maketrans("UZOB", "XXXX")
 
 
 # ---------------------------------------------------------------------------
@@ -64,9 +67,13 @@ class EncodeConfig:
 
 
 def _format_sequence(seq: str) -> str:
-    """ProstT5 input format: ``"<AA2fold> R E S I D U E S"`` with non-standard
-    amino acids (U/Z/O) masked as X."""
-    return PROSTT5_PREFIX + " " + " ".join(seq.translate(_NON_STANDARD_AA))
+    """ProstT5 input format: ``"<AA2fold> R E S I D U E S"``.
+
+    The sequence is upper-cased (lower-case / soft-masked residues would
+    otherwise tokenize to ``<unk>``) and non-standard amino acids (U/Z/O/B)
+    are masked as X, matching ProstT5's own preprocessing.
+    """
+    return PROSTT5_PREFIX + " " + " ".join(seq.upper().translate(_NON_STANDARD_AA))
 
 
 def _build_batches(
@@ -78,9 +85,12 @@ def _build_batches(
 ) -> list[list[tuple[str, str, int]]]:
     """Group ``(domain_id, sequence)`` pairs into batches for the encoder.
 
-    A batch flushes when it hits ``max_batch`` items, accumulates
-    ``max_residues`` total residues, or contains a sequence longer than
-    ``max_seq_len`` (processed alone for OOM safety).
+    The current batch is flushed once it reaches ``max_batch`` items,
+    accumulates ``max_residues`` total residues, or absorbs a sequence longer
+    than ``max_seq_len`` — the over-length sequence closes the batch it lands
+    in so it is not followed by more work in the same forward pass. Because
+    ``ProstT5Encoder.encode`` feeds items longest-first, long sequences
+    cluster early and land at the tail of small batches.
     """
     batches: list[list[tuple[str, str, int]]] = []
     current: list[tuple[str, str, int]] = []
@@ -168,7 +178,7 @@ class ProstT5Encoder:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def __enter__(self) -> ProstT5Encoder:
+    def __enter__(self) -> "ProstT5Encoder":
         self._ensure_loaded()
         return self
 
@@ -185,7 +195,10 @@ class ProstT5Encoder:
         matches the input mapping.
         """
         self._ensure_loaded()
-        assert self._model is not None and self._tokenizer is not None
+        model = self._model
+        tokenizer = self._tokenizer
+        if model is None or tokenizer is None:
+            raise RuntimeError("ProstT5 encoder failed to load.")
 
         items = list(sequences.items())
         if not items:
@@ -211,20 +224,17 @@ class ProstT5Encoder:
 
         for batch in tqdm(batches, desc="Encoding", leave=False):
             ids, formatted, seq_lens = zip(*batch, strict=False)
-            encoded = self._tokenizer.batch_encode_plus(
+            encoded = tokenizer.batch_encode_plus(
                 list(formatted),
                 add_special_tokens=True,
                 padding="longest",
                 return_tensors="pt",
             ).to(self._device)
 
-            try:
-                output = self._model(
-                    encoded.input_ids, attention_mask=encoded.attention_mask
-                )
-            except RuntimeError as e:
-                logger.error(f"Encoder failed on batch starting {ids[0]}: {e}")
-                continue
+            # Let encoder failures (incl. CUDA OOM) propagate rather than
+            # silently dropping sequences: batches are length-sorted so the
+            # largest — the one most likely to OOM — is attempted first.
+            output = model(encoded.input_ids, attention_mask=encoded.attention_mask)
 
             hidden = output.last_hidden_state
             for i, did in enumerate(ids):
@@ -251,21 +261,19 @@ class ProstT5Encoder:
 def _normalize_fasta_paths(
     fasta: str | Path | Sequence[str | Path],
 ) -> list[Path]:
-    if isinstance(fasta, (str, Path)):
-        return [Path(fasta)]
-    return [Path(p) for p in fasta]
+    paths = [fasta] if isinstance(fasta, str | Path) else fasta
+    return [Path(p) for p in paths]
 
 
 def _collect_sequences(fasta_paths: list[Path]) -> dict[str, str]:
     sequences: dict[str, str] = {}
     for path in fasta_paths:
-        if not path.exists():
-            raise FileNotFoundError(f"FASTA not found: {path}")
+        require_exists(path, "FASTA")
         for did, seq in read_fasta_sequences(path).items():
             if did in sequences:
                 logger.warning(f"Duplicate id '{did}' across FASTAs; keeping first")
-                continue
-            sequences[did] = seq
+            else:
+                sequences[did] = seq
     return sequences
 
 
@@ -276,7 +284,7 @@ def encode_fasta(
     config: EncodeConfig | None = None,
     labels_path: str | Path | None = None,
 ) -> EmbeddingStore:
-    """Encode one or more FASTA files and return an :class:`EmbeddingStore`.
+    """Encode one or more FASTA files and return an ``EmbeddingStore``.
 
     If ``labels_path`` is provided, rows without a matching label are
     dropped with a warning. The caller owns the returned encoder if they
@@ -340,17 +348,11 @@ def encode_fasta_to_dir(
 
     If ``overwrite`` is True and ``output_dir`` already contains the
     canonical files, they are removed first. Otherwise a pre-existing
-    store raises :class:`FileExistsError`.
+    store raises ``FileExistsError``.
     """
     output_dir = Path(output_dir)
     if overwrite and output_dir.is_dir():
-        for name in (
-            "embeddings.npy",
-            "labels.npy",
-            "ids.txt",
-            "id_to_row.npy",
-            "metadata.json",
-        ):
+        for name in CANONICAL_EMBEDDING_FILES:
             (output_dir / name).unlink(missing_ok=True)
 
     store = encode_fasta(fasta, encoder=encoder, config=config, labels_path=labels_path)
@@ -367,10 +369,6 @@ def build_encode_config(cfg: DictConfig | None) -> EncodeConfig:
     """Translate a Hydra ``embed:`` block (or ``None``) into an ``EncodeConfig``."""
     if cfg is None:
         return EncodeConfig()
-    device: torch.device | None = None
-    dev_str = cfg.get("device")
-    if dev_str:
-        device = torch.device(dev_str)
     return EncodeConfig(
         model_name=str(cfg.get("model_name", PROSTT5_MODEL)),
         half=bool(cfg.get("half", True)),
@@ -378,7 +376,7 @@ def build_encode_config(cfg: DictConfig | None) -> EncodeConfig:
         max_batch=int(cfg.get("max_batch", 100)),
         max_seq_len=int(cfg.get("max_seq_len", 1000)),
         dtype=str(cfg.get("dtype", "float16")),
-        device=device,
+        device=torch.device(dev_str) if (dev_str := cfg.get("device")) else None,
     )
 
 
@@ -388,20 +386,13 @@ def run(cfg: DictConfig) -> None:
     output_dir = Path(cfg.output_dir)
     labels_path = Path(cfg.labels) if cfg.get("labels") else None
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input not found: {input_path}")
-    if labels_path is not None and not labels_path.exists():
-        raise FileNotFoundError(f"Labels file not found: {labels_path}")
+    require_exists(input_path, "Input")
+    if labels_path is not None:
+        require_exists(labels_path, "Labels file")
 
-    # Accept a single FASTA or a directory of FASTAs.
-    if input_path.is_dir():
-        fasta_paths: list[Path] = sorted(input_path.glob("*.fasta")) + sorted(
-            input_path.glob("*.fa")
-        )
-        if not fasta_paths:
-            raise FileNotFoundError(f"No FASTA files in: {input_path}")
-    else:
-        fasta_paths = [input_path]
+    fasta_paths = list(resolve_fasta_paths(input_path).values())
+    if not fasta_paths:
+        raise FileNotFoundError(f"No FASTA files in: {input_path}")
 
     out = encode_fasta_to_dir(
         fasta_paths,
