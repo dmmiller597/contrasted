@@ -5,8 +5,6 @@ MPS, or CUDA. For CATH-sized databases a flat inner-product search is as fast
 as FAISS's own IndexFlatIP, with no extra dependency.
 """
 
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 
@@ -28,7 +26,7 @@ class VectorIndex:
         self,
         embeddings: torch.Tensor,
         ids: list[str] | None = None,
-        labels: list[str] | None = None,
+        labels: list[str | None] | None = None,
         *,
         normalized: bool = False,
     ):
@@ -43,7 +41,7 @@ class VectorIndex:
     def dim(self) -> int:
         return self.embeddings.shape[1]
 
-    def to(self, device: torch.device | str) -> VectorIndex:
+    def to(self, device: torch.device | str) -> "VectorIndex":
         self.embeddings = self.embeddings.to(device)
         return self
 
@@ -55,13 +53,20 @@ class VectorIndex:
         chunk_size: int | None = 4096,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(similarities, indices)`` of the top ``k`` DB rows per query."""
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
         n_db = len(self)
-        if queries.numel() == 0 or n_db == 0:
+        # Empty query set: return well-shaped empty results (stable for callers).
+        if queries.numel() == 0:
             device = self.embeddings.device
             return (
                 torch.empty(queries.shape[0], k, device=device),
                 torch.empty(queries.shape[0], k, dtype=torch.long, device=device),
             )
+        # Non-empty queries against an empty index is a setup error: fail loudly
+        # rather than returning uninitialized indices that read as garbage rows.
+        if n_db == 0:
+            raise ValueError("Cannot search an empty index (0 vectors).")
 
         queries = _normalize(queries.to(self.embeddings))
         k_eff = min(k, n_db)
@@ -76,6 +81,8 @@ class VectorIndex:
             indices.append(i)
         scores_t, indices_t = torch.cat(scores), torch.cat(indices)
 
+        # The DB has fewer than k rows: pad each row out to width k with
+        # zero scores and -1 sentinel indices so callers get a stable shape.
         if k_eff < k:
             pad_s = scores_t.new_zeros(queries.shape[0], k - k_eff)
             pad_i = indices_t.new_full((queries.shape[0], k - k_eff), -1)
@@ -97,8 +104,12 @@ class VectorIndex:
         logger.info(f"Saved index ({len(self)} vectors) to {path}")
 
     @classmethod
-    def load(cls, path: str | Path, device: str | torch.device = "cpu") -> VectorIndex:
-        data = torch.load(path, map_location="cpu", weights_only=False)
+    def load(
+        cls, path: str | Path, device: str | torch.device = "cpu"
+    ) -> "VectorIndex":
+        # Index files hold only a tensor + lists of str/None, which load under
+        # the safe weights_only=True path (no arbitrary-pickle execution).
+        data = torch.load(path, map_location="cpu", weights_only=True)
         index = cls(
             data["embeddings"],
             ids=data.get("ids"),
