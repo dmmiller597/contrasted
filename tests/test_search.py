@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from contrasted.search import VectorIndex
@@ -28,3 +29,35 @@ def test_vector_index_save_load(tmp_path):
     assert len(loaded) == 5
     assert loaded.ids == ids
     assert loaded.labels == labels
+
+
+def test_vector_index_save_load_preserves_none_labels(tmp_path):
+    # The weights_only=True load path must round-trip None (unlabeled) entries.
+    index = VectorIndex(
+        torch.randn(3, 4), ids=["a", "b", "c"], labels=["sf_a", None, "sf_c"]
+    )
+    path = tmp_path / "index.pt"
+    index.save(path)
+    loaded = VectorIndex.load(path)
+
+    assert loaded.labels == ["sf_a", None, "sf_c"]
+    assert loaded.labels[1] is None
+
+
+def test_search_empty_index_raises():
+    index = VectorIndex(torch.empty(0, 4))
+    with pytest.raises(ValueError, match="empty index"):
+        index.search(torch.randn(2, 4), k=1)
+
+
+def test_search_rejects_nonpositive_k():
+    index = VectorIndex(torch.eye(3))
+    with pytest.raises(ValueError, match="k must be positive"):
+        index.search(torch.randn(1, 3), k=0)
+
+
+def test_search_empty_queries_ok():
+    index = VectorIndex(torch.eye(3))
+    scores, indices = index.search(torch.empty(0, 3), k=2)
+    assert scores.shape == (0, 2)
+    assert indices.shape == (0, 2)
