@@ -10,6 +10,12 @@ embedding_dir: null
 
 index: data/vector_db/train.pt
 output_dir: outputs/annotations
+
+# Cosine-DISTANCE cutoff (distance = 1 - cosine_similarity, range [0, 2]).
+# A query whose nearest neighbour is farther than this is labelled "unknown".
+# NOTE: the default of 1.0 is intentionally permissive — it accepts any
+# neighbour with cosine similarity >= 0, i.e. it barely filters. Lower it
+# (e.g. 0.3-0.6) to require closer matches / higher-precision annotation.
 distance_cutoff: 1
 return_distance: true
 return_confidence: false
