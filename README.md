@@ -47,6 +47,10 @@ Train the projection head; Hydra config overrides apply on the CLI.
 
 All scripts are Hydra entry points; override any config key on the command line.
 
+To force local-only model loading (no Hugging Face downloads), set
+`local_files_only=true` for `contrasted-embed`, or
+`embed.local_files_only=true` for `contrasted-make-db` / `contrasted-annotate`.
+
 ### Build a vector database
 
 ```bash

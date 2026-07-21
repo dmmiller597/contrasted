@@ -11,3 +11,4 @@ max_batch: 100
 max_seq_len: 1000
 dtype: float16
 device: null          # Auto-detect (CUDA > MPS > CPU); override with "cpu"/"cuda"
+local_files_only: false  # true: require ProstT5 files in local HF cache
