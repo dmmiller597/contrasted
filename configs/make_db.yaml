@@ -21,3 +21,4 @@ embed:
   max_seq_len: 1000
   dtype: float16
   device: null
+  local_files_only: false
