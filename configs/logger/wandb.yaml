@@ -1,0 +1,4 @@
+_target_: lightning.pytorch.loggers.WandbLogger
+project: contrasted
+entity: null
+save_dir: ${hydra:run.dir}/wandb

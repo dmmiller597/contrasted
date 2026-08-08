@@ -8,6 +8,7 @@ model + loss + data + callbacks + trainer.
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import lightning as L
 import numpy as np
@@ -15,8 +16,19 @@ import torch
 
 from contrasted.callbacks import KNNEvaluationCallback
 from contrasted.data import EmbeddingDataModule
-from contrasted.losses import SupConLoss
+from contrasted.losses import CenterContrastiveLoss
 from contrasted.model import ContrastiveModel, ProjectionHead
+
+
+def _ccl(embedding_dim: int = 16, num_classes: int = 4) -> CenterContrastiveLoss:
+    return CenterContrastiveLoss(
+        num_classes=num_classes,
+        embedding_dim=embedding_dim,
+        margin=0.0,
+        scale=16.0,
+        lambda_=0.1,
+        label_smoothing=0.0,
+    )
 
 
 def _make_synthetic_embedding_dir(
@@ -95,7 +107,7 @@ def test_training_smoke(tmp_path):
     )
 
     head = ProjectionHead(input_dim=32, hidden_dim=32, output_dim=16, dropout=0.0)
-    loss = SupConLoss(temperature=0.1)
+    loss = _ccl(embedding_dim=16, num_classes=4)
     model = ContrastiveModel(
         projection_head=head,
         loss=loss,
@@ -128,3 +140,55 @@ def test_training_smoke(tmp_path):
     assert "val/knn_accuracy" in metrics
     # With well-separated clusters the knn accuracy should be high.
     assert float(metrics["val/knn_accuracy"]) >= 0.8
+
+
+def test_knn_callback_logs_single_test_metric_with_train_index(tmp_path):
+    torch.manual_seed(0)
+    embedding_dir = _make_synthetic_embedding_dir(tmp_path, dim=32)
+
+    dm = EmbeddingDataModule(
+        train_fasta=str(tmp_path / "train.fasta"),
+        val_fasta=str(tmp_path / "val.fasta"),
+        test_fasta=str(tmp_path / "test.fasta"),
+        embedding_dir=str(embedding_dir),
+        batch_size=32,
+        num_workers=0,
+        pin_memory=False,
+    )
+
+    head = ProjectionHead(input_dim=32, hidden_dim=32, output_dim=16, dropout=0.0)
+    loss = _ccl(embedding_dim=16, num_classes=4)
+    model = ContrastiveModel(
+        projection_head=head,
+        loss=loss,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        max_epochs=1,
+        warmup_epochs=0,
+    )
+
+    callback = KNNEvaluationCallback(eval_every_n_epochs=1)
+    trainer = L.Trainer(
+        max_epochs=1,
+        accelerator="cpu",
+        devices=1,
+        callbacks=[callback],
+        logger=False,
+        default_root_dir=tmp_path / "lightning_test_knn",
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        deterministic=False,
+    )
+    trainer.fit(model, datamodule=dm)
+    fit_metrics = dict(trainer.callback_metrics)
+    assert "val/knn_accuracy" in fit_metrics
+
+    with patch.object(callback, "_evaluate", wraps=callback._evaluate) as evaluate:
+        trainer.test(model, datamodule=dm)
+
+    evaluate.assert_called_once()
+    assert evaluate.call_args.args[1] is dm.train_dataset
+    test_metrics = trainer.callback_metrics
+    knn_metrics = {key for key in test_metrics if "knn_accuracy" in key}
+    assert knn_metrics == {"test/knn_accuracy"}

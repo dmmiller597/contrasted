@@ -43,10 +43,11 @@ def find_tmalign_binary(path: str | None = None) -> Path:
 
 
 _RE_ALIGNED = re.compile(r"Aligned length=\s*(\d+),\s*RMSD=\s*([\d.]+)")
-_RE_TM_SCORE_CHAIN1 = re.compile(
-    r"TM-score=\s*([\d.]+)\s+\(if normalized by length of Chain_1"
+# Homebrew TMalign 20210520 says "Structure_1"; older builds say "Chain_1".
+_RE_TM_SCORE_QUERY = re.compile(
+    r"TM-score=\s*([\d.]+)\s+\((?:if )?normalized by length of (?:Chain_1|Structure_1)"
 )
-_RE_LENGTH_CHAIN1 = re.compile(r"Length of Chain_1:\s*(\d+)\s+residues")
+_RE_LENGTH_QUERY = re.compile(r"Length of (?:Chain_1|Structure_1):\s*(\d+)\s+residues")
 
 
 def _required_match(
@@ -69,10 +70,10 @@ def _parse_tmalign_output(stdout: str) -> TMAlignResult:
     aligned_length = int(m_aligned.group(1))
     rmsd = float(m_aligned.group(2))
 
-    m_tm = _required_match(_RE_TM_SCORE_CHAIN1, stdout, "TM-score (Chain_1)")
+    m_tm = _required_match(_RE_TM_SCORE_QUERY, stdout, "TM-score (query)")
     tm_score = float(m_tm.group(1))
 
-    m_len = _required_match(_RE_LENGTH_CHAIN1, stdout, "Chain_1 length")
+    m_len = _required_match(_RE_LENGTH_QUERY, stdout, "query length")
     query_length = int(m_len.group(1))
 
     coverage = aligned_length / query_length if query_length > 0 else 0.0

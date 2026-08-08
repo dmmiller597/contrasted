@@ -32,7 +32,6 @@ def test_vector_index_save_load(tmp_path):
 
 
 def test_vector_index_save_load_preserves_none_labels(tmp_path):
-    # The weights_only=True load path must round-trip None (unlabeled) entries.
     index = VectorIndex(
         torch.randn(3, 4), ids=["a", "b", "c"], labels=["sf_a", None, "sf_c"]
     )
@@ -54,6 +53,14 @@ def test_search_rejects_nonpositive_k():
     index = VectorIndex(torch.eye(3))
     with pytest.raises(ValueError, match="k must be positive"):
         index.search(torch.randn(1, 3), k=0)
+
+
+@pytest.mark.parametrize("chunk_size", [0, -1])
+def test_search_rejects_nonpositive_chunk_size(chunk_size):
+    index = VectorIndex(torch.eye(3))
+
+    with pytest.raises(ValueError, match="chunk_size must be positive"):
+        index.search(torch.randn(1, 3), k=1, chunk_size=chunk_size)
 
 
 def test_search_empty_queries_ok():
