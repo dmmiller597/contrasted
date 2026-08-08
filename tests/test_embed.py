@@ -11,7 +11,12 @@ import numpy as np
 import pytest
 import torch
 
-from contrasted.data import EmbeddingStore, read_fasta_sequences, resolve_store
+from contrasted.data import (
+    EmbeddingStore,
+    read_fasta_sequences,
+    resolve_store,
+    validate_store_for_projection_head,
+)
 from contrasted.embed import (
     PROSTT5_DIM,
     EncodeConfig,
@@ -26,6 +31,16 @@ def test_format_sequence_uppercases_and_masks_non_standard():
     # to X, so nothing tokenizes to <unk>.
     out = _format_sequence("mseUzObG")
     assert out == "<AA2fold> M S E X X X X G"
+
+
+def test_format_3di_sequence_lowercases_and_uses_fold_prefix():
+    out = _format_sequence("AcDeF", modality="3di")
+    assert out == "<fold2AA> a c d e f"
+
+
+def test_format_sequence_rejects_unknown_modality():
+    with pytest.raises(ValueError, match="Unknown ProstT5 modality"):
+        _format_sequence("ACDE", modality="dna")
 
 
 def test_build_batches_flushes_on_max_batch():
@@ -198,7 +213,7 @@ def test_resolve_store_loads_existing_dir(tmp_path):
     out = tmp_path / "cache"
     store.save(out)
 
-    resolved = resolve_store(embedding_dir=out, fasta_paths=None)
+    resolved = resolve_store(embedding_dir=out)
     np.testing.assert_array_equal(np.asarray(resolved.embeddings), embeddings)
 
 
@@ -207,22 +222,46 @@ def test_resolve_store_errors_on_partial_dir(tmp_path):
     partial.mkdir()
     (partial / "ids.txt").write_text("a\n")
     with pytest.raises(FileExistsError):
-        resolve_store(embedding_dir=partial, fasta_paths=None)
+        resolve_store(embedding_dir=partial)
 
 
-def test_resolve_store_encodes_and_caches_when_dir_missing(tmp_path):
-    FakeModel, FakeTokenizer = _make_fake_hf_modules(dim=4)
-    fasta = tmp_path / "q.fasta"
-    fasta.write_text(">cath|1|alpha/1-3\nACG\n")
+def test_resolve_store_errors_when_dir_missing(tmp_path):
     cache = tmp_path / "new_cache"
+    with pytest.raises(FileNotFoundError, match="Embedding store not found"):
+        resolve_store(embedding_dir=cache)
 
-    with _patched_hf_components(FakeModel, FakeTokenizer):
-        store = resolve_store(
-            embedding_dir=cache,
-            fasta_paths=[fasta],
-            encode_config=EncodeConfig(device=torch.device("cpu"), dtype="float32"),
-        )
 
-    assert store.ids == ["alpha"]
-    assert (cache / "embeddings.npy").exists()
-    assert (cache / "metadata.json").exists()
+@pytest.mark.parametrize("embedding_dir", [None, ""])
+def test_resolve_store_requires_embedding_dir(embedding_dir):
+    with pytest.raises(
+        ValueError,
+        match=r"embedding_dir is required.*contrasted-build-concat-store",
+    ):
+        resolve_store(embedding_dir=embedding_dir)
+
+
+def test_validate_store_for_projection_head_rejects_explicit_aa_modality(tmp_path):
+    store = EmbeddingStore(
+        embeddings=np.zeros((1, 2048), dtype=np.float32),
+        ids=["a"],
+        labels=None,
+        id_to_idx={"a": 0},
+    )
+    store.save(tmp_path / "aa-store", extra_metadata={"modality": "aa"})
+    loaded = resolve_store(embedding_dir=tmp_path / "aa-store")
+
+    with pytest.raises(ValueError, match="requires an aa_3di_concat store"):
+        validate_store_for_projection_head(loaded, input_dim=2048)
+
+
+@pytest.mark.parametrize("metadata", [{}, {"modality": "aa_3di_concat"}])
+def test_validate_store_for_projection_head_accepts_compatible_metadata(metadata):
+    store = EmbeddingStore(
+        embeddings=np.zeros((1, 2048), dtype=np.float32),
+        ids=["a"],
+        labels=None,
+        id_to_idx={"a": 0},
+        metadata=metadata,
+    )
+
+    validate_store_for_projection_head(store, input_dim=2048)

@@ -9,8 +9,8 @@ from omegaconf import DictConfig
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_store,
+    validate_store_for_projection_head,
 )
-from contrasted.embed import build_encode_config
 from contrasted.model import ProjectionHead, project
 from contrasted.search import VectorIndex
 from contrasted.utils import get_device, load_labels, require_exists
@@ -40,6 +40,13 @@ def run(cfg: DictConfig) -> None:
     device = get_device()
     logger.info(f"Using device: {device}")
 
+    embedding_dir = cfg.get("embedding_dir")
+    if embedding_dir is None or not str(embedding_dir).strip():
+        raise ValueError(
+            "embedding_dir is required for contrasted-make-db. Pass a store "
+            "built by contrasted-build-concat-store or contrasted-embed."
+        )
+
     input_path = Path(cfg.input)
     model_path = Path(cfg.model_path)
 
@@ -60,17 +67,15 @@ def run(cfg: DictConfig) -> None:
     else:
         logger.info(f"Processing {len(domain_ids)} sequences")
 
-    embedding_dir = cfg.get("embedding_dir")
-    store = resolve_store(
-        embedding_dir=embedding_dir,
-        fasta_paths=[input_path],
-        encode_config=build_encode_config(cfg.get("embed")),
+    store = resolve_store(embedding_dir=embedding_dir)
+    validate_store_for_projection_head(
+        store,
+        input_dim=head.input_dim,
     )
     indices, domain_ids, missing_ids = store.resolve(domain_ids)
     if missing_ids:
         logger.warning(
-            f"{len(missing_ids)} domain IDs not found in "
-            f"{embedding_dir or 'on-the-fly encoding'}"
+            f"{len(missing_ids)} domain IDs not found in {embedding_dir}"
         )
     if not indices:
         raise ValueError("No embeddings found for any requested IDs")

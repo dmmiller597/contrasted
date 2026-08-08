@@ -1,6 +1,17 @@
 """Unit tests for make_db label resolution."""
 
-from contrasted.make_db import resolve_labels
+import pytest
+from omegaconf import DictConfig
+
+from contrasted.make_db import resolve_labels, run
+
+
+def test_run_requires_embedding_dir():
+    with pytest.raises(
+        ValueError,
+        match="embedding_dir is required for contrasted-make-db",
+    ):
+        run(DictConfig({"embedding_dir": None}))
 
 
 def test_resolve_labels_preserves_missing_as_none():

@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+from omegaconf import DictConfig
 
 from contrasted.annotate import (
     MISSING_EMBEDDING,
@@ -11,25 +12,45 @@ from contrasted.annotate import (
     attach_true_annotations,
     compute_metrics,
     knn_vote,
+    run,
     summarize,
     write_predictions_tsv,
 )
-from contrasted.search import VectorIndex
+from contrasted.search import VectorIndex, as_centroid_index
+
+
+def test_run_rejects_unknown_method():
+    with pytest.raises(ValueError, match="method must be 'knn' or 'centroid'"):
+        run(DictConfig({"method": "unsupported"}))
+
+
+def test_run_rejects_centroid_with_tmalign():
+    with pytest.raises(
+        ValueError,
+        match=r"centroid.*superfamily.*domain structure ids",
+    ):
+        run(DictConfig({"method": "centroid", "tm_align": True}))
+
+
+def test_run_requires_embedding_dir():
+    with pytest.raises(
+        ValueError,
+        match="embedding_dir is required for contrasted-annotate",
+    ):
+        run(DictConfig({"method": "knn", "embedding_dir": None}))
 
 
 def test_knn_vote_majority_with_labels():
-    # Build an index with 4 embeddings assigned to 2 labels.
     embs = torch.tensor(
         [
             [1.0, 0.0, 0.0, 0.0],
-            [0.9, 0.1, 0.0, 0.0],  # near query 0
+            [0.9, 0.1, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.95, 0.05, 0.0],
         ]
     )
     index = VectorIndex(embs, ids=["x0", "x1", "x2", "x3"], labels=["A", "A", "B", "B"])
 
-    # Two queries: one close to A-cluster, one close to B-cluster.
     queries = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
 
     predictions = knn_vote(
@@ -52,14 +73,37 @@ def test_knn_vote_majority_with_labels():
     assert by_id["q_A"].distance is not None
 
 
+def test_knn_vote_defaults_to_bounded_search_chunks(monkeypatch):
+    index = VectorIndex(torch.eye(2), ids=["x0", "x1"], labels=["A", "B"])
+    search = index.search
+    observed = {}
+
+    def tracked_search(queries, k, *, chunk_size):
+        observed["chunk_size"] = chunk_size
+        return search(queries, k, chunk_size=chunk_size)
+
+    monkeypatch.setattr(index, "search", tracked_search)
+
+    knn_vote(
+        torch.tensor([[1.0, 0.0]]),
+        ["q"],
+        [],
+        index,
+        k=1,
+        distance_cutoff=1.0,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+
+    assert observed["chunk_size"] == 4096
+
+
 def test_knn_vote_applies_distance_cutoff():
     embs = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     index = VectorIndex(embs, ids=["x0", "x1"], labels=["A", "B"])
 
     queries = torch.tensor([[1.0, 0.0]])
 
-    # Cutoff of 0.0 means even an exact-match (distance=0) passes, but any
-    # further neighbour is ruled out. Keep cutoff tight to force UNKNOWN.
     predictions = knn_vote(
         queries,
         ["q"],
@@ -75,9 +119,79 @@ def test_knn_vote_applies_distance_cutoff():
     assert predictions[0].confidence == 0.0
 
 
+def test_centroid_index_predicts_nearest_class_mean():
+    index = VectorIndex(
+        torch.tensor(
+            [
+                [0.0, 1.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [0.8, 0.2],
+            ]
+        ),
+        ids=["b0", "a0", "unlabeled", "a1"],
+        labels=["B", "A", None, "A"],
+    )
+
+    centroid_index = as_centroid_index(index)
+
+    assert len(centroid_index) == 2
+    assert centroid_index.ids == ["A", "B"]
+    assert centroid_index.labels == ["A", "B"]
+    assert centroid_index.embeddings.dtype == torch.float64
+    expected_a = index.embeddings[[1, 3]].to(torch.float64).mean(dim=0)
+    expected_a /= expected_a.norm()
+    assert torch.allclose(centroid_index.embeddings[0], expected_a)
+    assert torch.allclose(
+        centroid_index.embeddings.norm(dim=1),
+        torch.ones(2, dtype=torch.float64),
+    )
+
+    predictions = knn_vote(
+        expected_a.unsqueeze(0),
+        ["query"],
+        [],
+        centroid_index,
+        k=1,
+        distance_cutoff=0.2,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+
+    assert predictions[0].predicted_annotation == "A"
+
+
+def test_centroid_index_respects_distance_cutoff():
+    centroid_index = as_centroid_index(
+        VectorIndex(torch.tensor([[1.0, 0.0]]), labels=["A"])
+    )
+
+    predictions = knn_vote(
+        torch.tensor([[0.0, 1.0]]),
+        ["query"],
+        [],
+        centroid_index,
+        k=1,
+        distance_cutoff=0.5,
+        id_to_annotation={},
+        idx_to_annotation={},
+    )
+
+    assert predictions[0].predicted_annotation == UNKNOWN
+    assert predictions[0].confidence == 0.0
+
+
+@pytest.mark.parametrize("labels", [None, [None, None]])
+def test_centroid_index_rejects_missing_labeled_rows(labels):
+    index = VectorIndex(torch.eye(2), labels=labels)
+
+    with pytest.raises(ValueError, match="requires labels|labeled row"):
+        as_centroid_index(index)
+
+
 def test_knn_vote_uses_id_to_annotation_when_no_labels():
     embs = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-    index = VectorIndex(embs, ids=["ref0", "ref1"])  # no labels on the index
+    index = VectorIndex(embs, ids=["ref0", "ref1"])
 
     queries = torch.tensor([[1.0, 0.0]])
 
@@ -114,7 +228,6 @@ def test_write_predictions_tsv_atomic(tmp_path):
         "confidence",
     ]
     assert lines[1].split("\t") == ["q1", "A", "0.1", "1.0"]
-    # No leftover .tmp file.
     leftovers = list(tmp_path.glob("*.tmp"))
     assert leftovers == []
 
@@ -130,13 +243,11 @@ def test_summarize_counts():
     assert s["annotated"] == 1
     assert s["unknown"] == 1
     assert s["missing"] == 1
-    # Confidence stats are over annotated preds only (the lone "X" at 1.0).
     assert s["mean_confidence"] == 1.0
     assert s["median_confidence"] == 1.0
 
 
 def test_summarize_confidence_stats_empty():
-    # No annotated predictions -> stats fall back to 0.0 (no statistics error).
     preds = [Prediction(query_id="b", predicted_annotation=UNKNOWN, confidence=0.0)]
     s = summarize(preds)
     assert s["annotated"] == 0
@@ -144,14 +255,7 @@ def test_summarize_confidence_stats_empty():
     assert s["median_confidence"] == 0.0
 
 
-# ---------------------------------------------------------------------------
-# Unlabeled reference rows (None) must not vote or collide with the sentinel
-# ---------------------------------------------------------------------------
-
-
 def test_build_annotation_tables_none_vs_real_unknown():
-    # None -> -1 (cannot vote); a real superfamily literally named "unknown"
-    # stays a genuine, decodable class.
     index = VectorIndex(
         torch.randn(3, 4), ids=["a", "b", "c"], labels=["unknown", None, "B"]
     )
@@ -164,8 +268,6 @@ def test_build_annotation_tables_none_vs_real_unknown():
 
 
 def test_unlabeled_db_rows_do_not_vote():
-    # Three neighbours near the query: two unlabeled (None), one labeled "B".
-    # The single labeled neighbour must win; the None rows form no class.
     embs = torch.tensor([[1.0, 0.0, 0.0], [0.99, 0.01, 0.0], [0.98, 0.02, 0.0]])
     index = VectorIndex(embs, ids=["u0", "u1", "b0"], labels=[None, None, "B"])
     preds = knn_vote(
@@ -179,7 +281,6 @@ def test_unlabeled_db_rows_do_not_vote():
         idx_to_annotation={},
     )
     assert preds[0].predicted_annotation == "B"
-    # Only 1 of k=3 neighbours is labeled.
     assert preds[0].confidence == pytest.approx(1 / 3)
 
 
@@ -213,15 +314,12 @@ def test_real_unknown_label_still_votes():
         id_to_annotation={},
         idx_to_annotation={},
     )
-    # The real label wins by actual voting (full confidence), not by falling
-    # through to the no-neighbour sentinel path (which yields confidence 0.0).
     assert preds[0].predicted_annotation == "unknown"
     assert preds[0].confidence == 1.0
     assert preds[0].distance is not None
 
 
 def test_metrics_do_not_conflate_unlabeled_reference_votes():
-    # DB: a labeled "A" cluster plus an unlabeled cluster.
     embs = torch.tensor(
         [
             [1.0, 0.0, 0.0],
@@ -233,7 +331,6 @@ def test_metrics_do_not_conflate_unlabeled_reference_votes():
     index = VectorIndex(
         embs, ids=["a0", "a1", "u0", "u1"], labels=["A", "A", None, None]
     )
-    # q_a matches the A cluster; q_u matches only unlabeled rows.
     queries = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     id_to_ann = {"q_a": 0, "q_u": 0}
     idx_to_ann = {0: "A"}
@@ -250,9 +347,8 @@ def test_metrics_do_not_conflate_unlabeled_reference_votes():
     attach_true_annotations(preds, id_to_ann, idx_to_ann)
     by_id = {p.query_id: p for p in preds}
     assert by_id["q_a"].predicted_annotation == "A"
-    assert by_id["q_u"].predicted_annotation == UNKNOWN  # no labeled neighbour
+    assert by_id["q_u"].predicted_annotation == UNKNOWN
 
-    # q_a is a correct annotation; q_u is excluded (not scored as a wrong "A").
     assert compute_metrics(preds) == {"accuracy": 1.0}
     s = summarize(preds)
     assert s["annotated"] == 1

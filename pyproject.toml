@@ -1,6 +1,6 @@
 [project]
 name = "contrasted"
-version = "0.1.0"
+version = "1.0.0"
 description = "Supervised contrastive learning for CATH protein superfamily classification"
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,7 @@ cloud = [
 # scripts/ (cluster analyses, plotting, structural validation, etc.).
 # Not required to train, make a vector DB, annotate, or evaluate.
 analysis = [
+    "faiss-cpu>=1.13.2",
     "h5py>=3.11",
     "protspace>=2.1",
     "polars>=1.0",
@@ -67,6 +68,7 @@ contrasted-train = "contrasted.train:main"
 contrasted-embed = "contrasted.embed:main"
 contrasted-make-db = "contrasted.make_db:main"
 contrasted-annotate = "contrasted.annotate:main"
+contrasted-build-concat-store = "contrasted.concat:main"
 
 [dependency-groups]
 dev = [
@@ -80,12 +82,45 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/contrasted", "configs"]
+packages = ["src/contrasted"]
+
+# Only preprint configs ship in the wheel (Hydra pkg://configs).
+[tool.hatch.build.targets.wheel.force-include]
+"configs/__init__.py" = "configs/__init__.py"
+"configs/annotate.yaml" = "configs/annotate.yaml"
+"configs/embed.yaml" = "configs/embed.yaml"
+"configs/make_db.yaml" = "configs/make_db.yaml"
+"configs/make_db_cath_s100_s20.yaml" = "configs/make_db_cath_s100_s20.yaml"
+"configs/train.yaml" = "configs/train.yaml"
+"configs/cath_s20_aa3di_concat_ccl.yaml" = "configs/cath_s20_aa3di_concat_ccl.yaml"
+"configs/cath_s40_aa3di_concat_ccl.yaml" = "configs/cath_s40_aa3di_concat_ccl.yaml"
+"configs/logger/csv.yaml" = "configs/logger/csv.yaml"
+"configs/logger/wandb.yaml" = "configs/logger/wandb.yaml"
+"configs/model/loss/ccl.yaml" = "configs/model/loss/ccl.yaml"
+
+# Keep the sdist to the installable + verify surface (no checkpoints/reports sprawl).
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/contrasted",
+  "configs",
+  "tests",
+  "reproduce",
+  "reports/v1-src-release",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "contrasted-logo.png",
+]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
 src = ["src"]
+exclude = [
+    ".venv",
+    "_archive",
+    "tests/analysis",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP", "RUF"]
@@ -99,3 +134,7 @@ python-version = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-m 'not analysis'"
+markers = [
+    "analysis: tests that need the analysis optional extra",
+]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import pickle
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -12,6 +14,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
+logger = logging.getLogger(__name__)
+
 _HEAD_FORMAT = "contrasted_projection_head_v1"
 
 
@@ -20,7 +24,7 @@ class ProjectionHead(nn.Module):
 
     def __init__(
         self,
-        input_dim: int = 1024,
+        input_dim: int = 2048,
         hidden_dim: int = 512,
         output_dim: int = 128,
         dropout: float = 0.0,
@@ -72,7 +76,16 @@ class ProjectionHead(nn.Module):
         ``projection_head.net.*`` keys in their ``state_dict``; dims are
         recovered from the linear weight shapes.
         """
-        blob = torch.load(path, map_location=map_location, weights_only=False)
+        try:
+            blob = torch.load(path, map_location=map_location, weights_only=True)
+        except (pickle.UnpicklingError, TypeError) as error:
+            logger.warning(
+                "Weights-only loading failed for %s; retrying with "
+                "weights_only=False for Lightning checkpoint compatibility: %s",
+                path,
+                error,
+            )
+            blob = torch.load(path, map_location=map_location, weights_only=False)
         if isinstance(blob, dict) and blob.get("format") == _HEAD_FORMAT:
             head = cls(
                 input_dim=int(blob["input_dim"]),
@@ -137,6 +150,17 @@ def project(
     Returns a CPU tensor of shape ``(len(rows), head.output_dim)``.
     """
     head.eval()
+    input_dim = getattr(head, "input_dim", None)
+    if input_dim is not None and getattr(embeddings, "ndim", None) == 2:
+        store_dim = int(embeddings.shape[1])
+        if store_dim != int(input_dim):
+            raise ValueError(
+                f"Embedding store width {store_dim} does not match projection "
+                f"head input_dim {input_dim}. Headline CCL AA∥3Di expects a "
+                f"2048-d AA∥3Di store (contrasted-build-concat-store); "
+                f"AA-only ProstT5 stores are 1024-d."
+            )
+
     rows: Sequence[int] = range(len(embeddings)) if indices is None else indices
     n = len(rows)
     if n == 0:
@@ -180,18 +204,38 @@ class ContrastiveModel(L.LightningModule):
         return self.projection_head(embeddings)
 
     def _shared_step(self, batch, stage: str) -> torch.Tensor:
+        from contrasted.losses import as_objective
+
         embeddings, labels = batch
         projected = self(embeddings)
-        loss = self.loss(projected, labels)
+        objective = as_objective(self.loss(projected, labels))
         self.log(
             f"{stage}/loss",
-            loss,
+            objective.loss,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
         )
-        return loss
+        # Component / diagnostic logs are most useful on the training stream.
+        if stage == "train":
+            for name, value in objective.components.items():
+                self.log(
+                    f"{stage}/{name}",
+                    value,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+            for name, value in objective.diagnostics.items():
+                self.log(
+                    f"{stage}/{name}",
+                    value,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+        return objective.loss
 
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, "train")
