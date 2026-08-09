@@ -4,7 +4,7 @@ The pipeline is a chain of composable stages:
 
 1. ``project`` -- project query embeddings through the head.
 2. ``knn_vote`` -- search the domain or centroid index for annotations.
-3. ``rerank_with_tmalign`` -- (optional) add TM-align structural scores.
+3. ``attach_tmalign_scores`` -- (optional) attach TM-align structural scores.
 4. ``write_predictions_tsv`` -- atomically write the results as TSV.
 
 ``run`` composes everything from a Hydra config.
@@ -30,13 +30,8 @@ from contrasted.data import (
     resolve_store,
     validate_store_for_projection_head,
 )
-from contrasted.model import ProjectionHead, project
+from contrasted.projection import ProjectionHead, project
 from contrasted.search import VectorIndex, as_centroid_index
-from contrasted.tmalign import (
-    find_tmalign_binary,
-    resolve_structure_path,
-    run_tmalign,
-)
 from contrasted.utils import get_device, load_labels, require_exists
 
 logger = logging.getLogger(__name__)
@@ -211,11 +206,11 @@ def attach_true_annotations(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: TM-align rerank
+# Stage 2: attach TM-align scores
 # ---------------------------------------------------------------------------
 
 
-def rerank_with_tmalign(
+def attach_tmalign_scores(
     predictions: list[Prediction],
     index: VectorIndex,
     structure_dir: Path,
@@ -224,11 +219,14 @@ def rerank_with_tmalign(
 ) -> None:
     """Attach TM-align scores for each prediction's top-1 DB neighbour.
 
-    Populates ``tm_score`` / ``rmsd`` / ``tm_coverage`` in place; logs and
-    skips predictions whose structures cannot be located.
+    Populates ``tm_score`` / ``rmsd`` / ``tm_coverage`` in place. Does not
+    change predicted labels. Logs and skips predictions whose structures
+    cannot be located.
     """
+    from contrasted.tmalign import resolve_structure_path, run_tmalign
+
     if index.ids is None:
-        logger.warning("Index has no ids; cannot run TM-align rerank.")
+        logger.warning("Index has no ids; cannot attach TM-align scores.")
         return
 
     for p in predictions:
@@ -505,6 +503,8 @@ def run(cfg: DictConfig) -> None:
     structure_dir = Path(cfg.structure_dir) if cfg.get("structure_dir") else None
     tmalign_binary = str(cfg.get("tmalign_binary", "TMalign"))
     if tm_align_enabled:
+        from contrasted.tmalign import find_tmalign_binary
+
         if structure_dir is None:
             raise ValueError("structure_dir must be set when tm_align=true")
         if not structure_dir.is_dir():
@@ -606,7 +606,7 @@ def run(cfg: DictConfig) -> None:
         if return_true_annotation:
             attach_true_annotations(predictions, id_to_annotation, idx_to_annotation)
         if tm_align_enabled and structure_dir is not None:
-            rerank_with_tmalign(
+            attach_tmalign_scores(
                 predictions, index, structure_dir, binary=tmalign_binary
             )
 
