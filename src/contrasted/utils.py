@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import lightning as L
 import torch
 
 
@@ -14,6 +13,8 @@ def set_seed(seed: int = 42, deterministic: bool = True) -> int:
     they cannot run deterministically (rather than silently using a
     non-deterministic path).
     """
+    import lightning as L
+
     resolved = L.seed_everything(seed, workers=True)
     if deterministic:
         torch.use_deterministic_algorithms(True, warn_only=True)
