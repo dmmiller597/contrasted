@@ -7,7 +7,7 @@ import lightning as L
 import torch
 from torch.utils.data import DataLoader
 
-from contrasted.model import ProjectionHead
+from contrasted.projection import ProjectionHead
 from contrasted.search import VectorIndex
 from contrasted.utils import accuracy
 
