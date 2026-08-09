@@ -11,7 +11,7 @@ from contrasted.data import (
     resolve_store,
     validate_store_for_projection_head,
 )
-from contrasted.model import ProjectionHead, project
+from contrasted.projection import ProjectionHead, project
 from contrasted.search import VectorIndex
 from contrasted.utils import get_device, load_labels, require_exists
 
@@ -74,8 +74,11 @@ def run(cfg: DictConfig) -> None:
     )
     indices, domain_ids, missing_ids = store.resolve(domain_ids)
     if missing_ids:
-        logger.warning(
-            f"{len(missing_ids)} domain IDs not found in {embedding_dir}"
+        sample = ", ".join(missing_ids[:5])
+        more = f" (+{len(missing_ids) - 5} more)" if len(missing_ids) > 5 else ""
+        raise ValueError(
+            f"{len(missing_ids)} domain IDs not found in {embedding_dir}: "
+            f"{sample}{more}"
         )
     if not indices:
         raise ValueError("No embeddings found for any requested IDs")
