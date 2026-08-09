@@ -26,14 +26,13 @@ def _inject_loss_class_counts(cfg: DictConfig, datamodule) -> None:
 
 def _write_run_provenance(cfg: DictConfig, init_hashes: dict[str, str]) -> None:
     run_dir = Path(cfg.trainer.get("default_root_dir") or ".")
-    # Prefer Hydra output dir when available.
     try:
         from hydra.core.hydra_config import HydraConfig
-
+    except ImportError:
+        pass
+    else:
         if HydraConfig.initialized():
             run_dir = Path(HydraConfig.get().runtime.output_dir)
-    except Exception:
-        pass
     run_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "seed": int(cfg.seed),
