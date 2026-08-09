@@ -23,13 +23,6 @@ class ObjectiveOutput:
     diagnostics: dict[str, Tensor] = field(default_factory=dict)
 
 
-def as_objective(result: Tensor | ObjectiveOutput) -> ObjectiveOutput:
-    """Wrap a scalar tensor as ``ObjectiveOutput``; pass structured results through."""
-    if isinstance(result, ObjectiveOutput):
-        return result
-    return ObjectiveOutput(loss=result)
-
-
 def _validate_proxy_hparams(
     *,
     num_classes: int,
