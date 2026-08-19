@@ -177,4 +177,3 @@ def project(
             batch = torch.from_numpy(np.ascontiguousarray(batch))
         chunks.append(head(batch.float().to(device)).cpu())
     return torch.cat(chunks, dim=0)
-
