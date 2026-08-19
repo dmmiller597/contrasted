@@ -151,6 +151,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         num_workers: int = 4,
         pin_memory: bool = True,
         knn_eval_batch_size: int | None = None,
+        knn_index_fasta: str | None = None,
         balanced_sampler: bool = False,
         m_per_class: int = 2,
         batches_per_epoch: int = 112,
@@ -174,6 +175,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         self.embedding_dir = Path(embedding_dir)
         self.pin_memory = pin_memory and not torch.backends.mps.is_available()
         self.knn_eval_batch_size = knn_eval_batch_size
+        self.knn_index_fasta = Path(knn_index_fasta) if knn_index_fasta else None
         self.balanced_sampler = balanced_sampler
         self.m_per_class = m_per_class
         self.batches_per_epoch = batches_per_epoch
@@ -182,6 +184,7 @@ class EmbeddingDataModule(L.LightningDataModule):
 
         self.store: EmbeddingStore | None = None
         self.test_datasets: dict[str, EmbeddingDataset] = {}
+        self.knn_index_dataset: EmbeddingDataset | None = None
 
     @staticmethod
     def _resolve_test_paths(
@@ -214,7 +217,12 @@ class EmbeddingDataModule(L.LightningDataModule):
         assert self.store is not None and self.store.labels is not None
         store_labels = np.asarray(self.store.labels)
         train_ids = load_domain_ids_from_fasta(self.train_fasta)
-        train_idx, _, _ = self.store.resolve(train_ids)
+        train_idx, _, missing_ids = self.store.resolve(train_ids)
+        if missing_ids:
+            raise ValueError(
+                f"{self.train_fasta.name}: {len(missing_ids)}/{len(train_ids)} "
+                "domains not found in the embedding store."
+            )
         if not len(train_idx):
             raise ValueError(
                 f"{self.train_fasta.name}: no domains found in the embedding store."
@@ -312,12 +320,16 @@ class EmbeddingDataModule(L.LightningDataModule):
             self.train_dataset = self._create_dataset(self.train_fasta)
             self.val_dataset = self._create_dataset(self.val_fasta)
             self._maybe_build_train_sampler()
+            self._maybe_build_knn_index()
 
         if stage in ("test", None):
             self.test_datasets = {
                 name: self._create_dataset(path)
                 for name, path in self.test_fasta_paths.items()
             }
+            # test_after_fit may call setup("test") without a prior fit setup.
+            if self.knn_index_dataset is None:
+                self._maybe_build_knn_index()
 
         if self.strict_split_checks:
             # Load test datasets for overlap checks even during fit-only setup.
@@ -343,6 +355,19 @@ class EmbeddingDataModule(L.LightningDataModule):
             m_per_class=self.m_per_class,
             batches_per_epoch=self.batches_per_epoch,
             seed=seed,
+        )
+
+    def _maybe_build_knn_index(self) -> None:
+        """Optional smaller gallery for train-time / test_after_fit k-NN."""
+        if self.knn_index_fasta is None:
+            self.knn_index_dataset = None
+            return
+        self.knn_index_dataset = self._create_dataset(self.knn_index_fasta)
+        logger.info(
+            "KNN index fasta %s: %s samples (train has %s)",
+            self.knn_index_fasta.name,
+            f"{len(self.knn_index_dataset):,}",
+            f"{len(self.train_dataset):,}" if hasattr(self, "train_dataset") else "?",
         )
 
     def _load_store(self) -> None:
@@ -372,7 +397,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         indices, _, missing_ids = self.store.resolve(domain_ids)
 
         if missing_ids:
-            logger.warning(
+            raise ValueError(
                 f"{fasta_path.name}: {len(missing_ids)}/{len(domain_ids)} "
                 "domains not found"
             )
@@ -419,4 +444,3 @@ class EmbeddingDataModule(L.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.num_workers > 0,
         )
-
