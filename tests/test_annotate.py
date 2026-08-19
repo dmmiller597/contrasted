@@ -185,7 +185,7 @@ def test_centroid_index_respects_distance_cutoff():
 def test_centroid_index_rejects_missing_labeled_rows(labels):
     index = VectorIndex(torch.eye(2), labels=labels)
 
-    with pytest.raises(ValueError, match="requires labels|labeled row"):
+    with pytest.raises(ValueError, match=r"requires labels|labeled row"):
         as_centroid_index(index)
 
 

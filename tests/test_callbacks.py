@@ -9,7 +9,8 @@ import torch
 
 from contrasted.callbacks import HeadExportCallback
 from contrasted.losses import CenterContrastiveLoss
-from contrasted.model import ContrastiveModel, ProjectionHead
+from contrasted.model import ContrastiveModel
+from contrasted.projection import ProjectionHead
 
 
 def _ccl(num_classes: int = 3, embedding_dim: int = 4) -> CenterContrastiveLoss:

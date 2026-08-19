@@ -7,11 +7,11 @@ import pytest
 import torch
 
 from contrasted.data import (
-    EmbeddingDataModule,
     EmbeddingStore,
     load_domain_ids_from_fasta,
     parse_fasta_header,
 )
+from contrasted.datamodule import EmbeddingDataModule
 
 
 @pytest.mark.parametrize(
@@ -142,6 +142,39 @@ def test_datamodule_uses_train_classes(tmp_path):
     )
     with pytest.raises(ValueError, match="absent from the training split"):
         dm2.setup("fit")
+
+
+def test_datamodule_raises_on_missing_split_ids(tmp_path):
+    emb_dir = tmp_path / "emb"
+    emb_dir.mkdir()
+    ids = ["d0", "d1"]
+    np.save(emb_dir / "embeddings.npy", np.random.randn(2, 8).astype(np.float32))
+    np.save(emb_dir / "labels.npy", np.array([0, 1], dtype=np.int64))
+    (emb_dir / "ids.txt").write_text("\n".join(ids) + "\n")
+    (emb_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "dims": 8,
+                "count": 2,
+                "dtype": "float32",
+                "idx_to_label": {"0": "1.10.8.10", "1": "1.10.8.20"},
+            }
+        )
+    )
+    train = tmp_path / "train.fasta"
+    train.write_text(">d0\nACDE\n>d1\nACDE\n")
+    val = tmp_path / "val.fasta"
+    val.write_text(">d0\nACDE\n>MISSING\nACDE\n")
+
+    dm = EmbeddingDataModule(
+        train_fasta=str(train),
+        val_fasta=str(val),
+        test_fasta=str(train),
+        embedding_dir=str(emb_dir),
+        num_workers=0,
+    )
+    with pytest.raises(ValueError, match="1/2 domains not found"):
+        dm.setup("fit")
 
 
 def test_datamodule_fallback_rejects_negative_labels(tmp_path):

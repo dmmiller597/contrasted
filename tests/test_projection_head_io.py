@@ -3,7 +3,8 @@ from pathlib import Path
 import torch
 
 from contrasted.losses import CenterContrastiveLoss
-from contrasted.model import ContrastiveModel, ProjectionHead
+from contrasted.model import ContrastiveModel
+from contrasted.projection import ProjectionHead
 
 
 def test_save_load_roundtrip(tmp_path, monkeypatch):
