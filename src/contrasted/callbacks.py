@@ -1,5 +1,7 @@
 """Lightning callbacks for training-time evaluation."""
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -17,8 +19,9 @@ logger = logging.getLogger(__name__)
 class KNNEvaluationCallback(L.Callback):
     """1-NN evaluation using cosine similarity search.
 
-    Validation and test always use ``datamodule.train_dataset`` as the index.
-    The index is rebuilt at the configured validation cadence.
+    Uses ``datamodule.knn_index_dataset`` when present (e.g. CATH-only gallery
+    while training on CATH+TED), otherwise ``datamodule.train_dataset``. The
+    index is rebuilt at the configured validation cadence.
 
     Use ``knn_eval_batch_size`` (on the callback or datamodule) for large-batch
     inference-only embedding collection; training ``batch_size`` can stay modest.
@@ -40,6 +43,11 @@ class KNNEvaluationCallback(L.Callback):
             return datamodule.knn_eval_batch_size
         return datamodule.batch_size
 
+    @staticmethod
+    def _index_dataset(datamodule):
+        index = getattr(datamodule, "knn_index_dataset", None)
+        return index if index is not None else datamodule.train_dataset
+
     def on_validation_epoch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule
     ) -> None:
@@ -51,9 +59,15 @@ class KNNEvaluationCallback(L.Callback):
         dm = getattr(trainer, "datamodule", None)
         if dm is None:
             return
+        index_dataset = self._index_dataset(dm)
+        if index_dataset is not dm.train_dataset:
+            logger.info(
+                "val/knn_accuracy: KNN index has %s samples (not full train)",
+                f"{len(index_dataset):,}",
+            )
         acc = self._evaluate(
             pl_module,
-            dm.train_dataset,
+            index_dataset,
             dm.val_dataset,
             self._eval_batch_size(dm),
         )
@@ -78,9 +92,10 @@ class KNNEvaluationCallback(L.Callback):
             test_sets = [("", dm.test_dataset)]
 
         eval_bs = self._eval_batch_size(dm)
+        index_dataset = self._index_dataset(dm)
 
         for test_name, test_dataset in test_sets:
-            acc = self._evaluate(pl_module, dm.train_dataset, test_dataset, eval_bs)
+            acc = self._evaluate(pl_module, index_dataset, test_dataset, eval_bs)
             key = f"test/{test_name}/knn_accuracy" if test_name else "test/knn_accuracy"
             pl_module.log(key, acc, on_epoch=True, sync_dist=True)
 
