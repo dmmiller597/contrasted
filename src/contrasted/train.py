@@ -10,6 +10,7 @@ import lightning as L
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from configs import hydra_config_dir
 from contrasted.init_control import apply_controlled_initialization, component_seeds
 from contrasted.utils import set_seed
 
@@ -98,7 +99,7 @@ def run(cfg: DictConfig) -> None:
         trainer.test(model, datamodule=datamodule, ckpt_path="best")
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="train")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="train")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
