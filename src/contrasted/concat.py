@@ -83,12 +83,8 @@ def resolve_foldseek(explicit: Path | None = None) -> Path:
     found = shutil.which("foldseek")
     if found:
         return Path(found)
-    local = Path("tools/foldseek-linux/foldseek/bin/foldseek")
-    if local.is_file():
-        return local
     raise FileNotFoundError(
-        "foldseek not found on PATH or tools/foldseek-linux/...; "
-        "pass --foldseek /path/to/foldseek"
+        "foldseek not found on PATH; pass --foldseek /path/to/foldseek"
     )
 
 
