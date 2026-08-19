@@ -1,24 +1,9 @@
-input: data/cath-domain-seqs-S100.fa
-model_path: checkpoints/holdouts66.ckpt
-index_path: data/vector_db/train.pt
-
-# Optional path to a prepared embedding directory. If unset or missing,
-# ProstT5 embeddings are generated on the fly from `input`. When set to a
-# non-existent path, on-the-fly embeddings are cached there for re-runs.
+input: ???
+# Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
+model_path: aa3di_s40_seed40_head.pt
+index_path: index.pt
 embedding_dir: null
-
 ids: null
-label_file: data/cath-domain-sf-list.txt
+label_file: null
 project_batch_size: 4096
 dtype: float16
-
-# ProstT5 encoding options (used only when on-the-fly encoding is triggered)
-embed:
-  model_name: Rostlab/ProstT5
-  half: true
-  max_residues: 4000
-  max_batch: 100
-  max_seq_len: 1000
-  dtype: float16
-  device: null
-  local_files_only: false

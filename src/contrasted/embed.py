@@ -23,6 +23,7 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from configs import hydra_config_dir
 from contrasted.data import (
     CANONICAL_EMBEDDING_FILES,
     EmbeddingStore,
@@ -37,7 +38,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PROSTT5_MODEL = "Rostlab/ProstT5"
-PROSTT5_PREFIX = "<AA2fold>"
+PROSTT5_PREFIX = "<AA2fold>"  # AA embeddings / AA→3Di
+PROSTT5_FOLD_PREFIX = "<fold2AA>"  # 3Di embeddings / 3Di→AA
 PROSTT5_DIM = 1024
 
 _NON_STANDARD_AA = str.maketrans("UZOB", "XXXX")
@@ -67,14 +69,22 @@ class EncodeConfig:
 # ---------------------------------------------------------------------------
 
 
-def _format_sequence(seq: str) -> str:
-    """ProstT5 input format: ``"<AA2fold> R E S I D U E S"``.
+def _format_sequence(seq: str, *, modality: str = "aa") -> str:
+    """ProstT5 input format with the bilingual directionality prefix.
 
-    The sequence is upper-cased (lower-case / soft-masked residues would
-    otherwise tokenize to ``<unk>``) and non-standard amino acids (U/Z/O/B)
-    are masked as X, matching ProstT5's own preprocessing.
+    ``modality="aa"`` → ``"<AA2fold> R E S I D U E S"`` (uppercase AA).
+    ``modality="3di"`` → ``"<fold2AA> r e s i d u e s"`` (lowercase 3Di).
+
+    Amino-acid sequences are upper-cased (soft-masked residues would otherwise
+    tokenize to ``<unk>``) and non-standard residues (U/Z/O/B) are masked as X.
+    3Di strings are lower-cased so they do not clash with AA tokens.
     """
-    return PROSTT5_PREFIX + " " + " ".join(seq.upper().translate(_NON_STANDARD_AA))
+    if modality == "aa":
+        residues = seq.upper().translate(_NON_STANDARD_AA)
+        return PROSTT5_PREFIX + " " + " ".join(residues)
+    if modality == "3di":
+        return PROSTT5_FOLD_PREFIX + " " + " ".join(seq.lower())
+    raise ValueError(f"Unknown ProstT5 modality: {modality!r} (expected 'aa' or '3di')")
 
 
 def _build_batches(
@@ -83,6 +93,7 @@ def _build_batches(
     max_residues: int,
     max_batch: int,
     max_seq_len: int,
+    modality: str = "aa",
 ) -> list[list[tuple[str, str, int]]]:
     """Group ``(domain_id, sequence)`` pairs into batches for the encoder.
 
@@ -98,7 +109,7 @@ def _build_batches(
     residues = 0
     for domain_id, seq in items:
         seq_len = len(seq)
-        current.append((domain_id, _format_sequence(seq), seq_len))
+        current.append((domain_id, _format_sequence(seq, modality=modality), seq_len))
         residues += seq_len
         if (
             len(current) >= max_batch
@@ -192,13 +203,19 @@ class ProstT5Encoder:
         self.close()
 
     @torch.inference_mode()
-    def encode(self, sequences: Mapping[str, str]) -> dict[str, np.ndarray]:
+    def encode(
+        self,
+        sequences: Mapping[str, str],
+        *,
+        modality: str = "aa",
+    ) -> dict[str, np.ndarray]:
         """Encode ``{id: sequence}`` -> ``{id: (1024,) ndarray}``.
 
-        Mean-pools residue-token hidden states (excluding the ``<AA2fold>``
-        prefix). Output dtype follows ``config.dtype``. Sequences are
-        processed in length-sorted batches for OOM safety; output order
-        matches the input mapping.
+        Mean-pools residue-token hidden states (excluding the directionality
+        prefix). ``modality`` selects ``<AA2fold>`` (amino acids) or
+        ``<fold2AA>`` (lowercase 3Di). Output dtype follows ``config.dtype``.
+        Sequences are processed in length-sorted batches for OOM safety;
+        output order matches the input mapping.
         """
         self._ensure_loaded()
         model = self._model
@@ -217,6 +234,7 @@ class ProstT5Encoder:
             max_residues=self.config.max_residues,
             max_batch=self.config.max_batch,
             max_seq_len=self.config.max_seq_len,
+            modality=modality,
         )
 
         np_dtype = np.dtype(self.config.dtype)
@@ -229,7 +247,7 @@ class ProstT5Encoder:
         )
 
         for batch in tqdm(batches, desc="Encoding", leave=False):
-            ids, formatted, seq_lens = zip(*batch, strict=False)
+            ids, formatted, seq_lens = zip(*batch, strict=True)
             encoded = tokenizer.batch_encode_plus(
                 list(formatted),
                 add_special_tokens=True,
@@ -245,7 +263,7 @@ class ProstT5Encoder:
             hidden = output.last_hidden_state
             for i, did in enumerate(ids):
                 s_len = seq_lens[i]
-                # +1 skips the <AA2fold> prefix token.
+                # +1 skips the directionality prefix token.
                 emb = hidden[i, 1 : s_len + 1].mean(dim=0)
                 out[did] = emb.to(torch.float32).cpu().numpy().astype(np_dtype)
 
@@ -411,7 +429,7 @@ def run(cfg: DictConfig) -> None:
     logger.info(f"Wrote embedding directory: {out}")
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="embed")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="embed")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 

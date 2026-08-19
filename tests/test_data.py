@@ -7,11 +7,11 @@ import pytest
 import torch
 
 from contrasted.data import (
-    EmbeddingDataModule,
     EmbeddingStore,
     load_domain_ids_from_fasta,
     parse_fasta_header,
 )
+from contrasted.datamodule import EmbeddingDataModule
 
 
 @pytest.mark.parametrize(
@@ -82,8 +82,7 @@ def test_load_domain_ids_skips_bare_header(tmp_path):
 
 def test_datamodule_fallback_covers_noncontiguous_labels(tmp_path):
     # Hand-built dir with non-contiguous labels and NO idx_to_label metadata:
-    # num_classes must span 0..max(label), not len(unique), or ProxyAnchorLoss's
-    # one_hot(num_classes) would fall out of range.
+    # the store's idx_to_label must span 0..max(label) for lookup.
     emb_dir = tmp_path / "emb"
     emb_dir.mkdir()
     ids = ["d0", "d1", "d2"]
@@ -104,7 +103,78 @@ def test_datamodule_fallback_covers_noncontiguous_labels(tmp_path):
         num_workers=0,
     )
     dm._load_store()
-    assert dm.num_classes == 10  # max label 9 + 1, not 3 unique values
+    assert dm.store is not None
+    assert dm.store.num_classes == 10  # max label 9 + 1, not 3 unique values
+
+
+def test_datamodule_uses_train_classes(tmp_path):
+    # num_classes is always the training split, not the store vocabulary.
+    emb_dir = tmp_path / "emb"
+    emb_dir.mkdir()
+    ids = ["d0", "d1", "d2"]
+    np.save(emb_dir / "embeddings.npy", np.random.randn(3, 8).astype(np.float32))
+    np.save(emb_dir / "labels.npy", np.array([0, 5, 9], dtype=np.int64))
+    (emb_dir / "ids.txt").write_text("\n".join(ids) + "\n")
+    (emb_dir / "metadata.json").write_text(
+        json.dumps({"dims": 8, "count": 3, "dtype": "float32"})
+    )
+    train = tmp_path / "train.fasta"
+    train.write_text(">d0\nACDE\n>d1\nACDE\n")  # only 2 of 3 classes
+    full = tmp_path / "all.fasta"
+    full.write_text("".join(f">{i}\nACDE\n" for i in ids))
+
+    dm = EmbeddingDataModule(
+        train_fasta=str(train),
+        val_fasta=str(train),
+        test_fasta=str(train),
+        embedding_dir=str(emb_dir),
+        num_workers=0,
+    )
+    dm.setup("fit")
+    assert dm.num_classes == 2  # two training classes, not 10 (store) or 3 (unique)
+
+    dm2 = EmbeddingDataModule(
+        train_fasta=str(train),
+        val_fasta=str(full),
+        test_fasta=str(train),
+        embedding_dir=str(emb_dir),
+        num_workers=0,
+    )
+    with pytest.raises(ValueError, match="absent from the training split"):
+        dm2.setup("fit")
+
+
+def test_datamodule_raises_on_missing_split_ids(tmp_path):
+    emb_dir = tmp_path / "emb"
+    emb_dir.mkdir()
+    ids = ["d0", "d1"]
+    np.save(emb_dir / "embeddings.npy", np.random.randn(2, 8).astype(np.float32))
+    np.save(emb_dir / "labels.npy", np.array([0, 1], dtype=np.int64))
+    (emb_dir / "ids.txt").write_text("\n".join(ids) + "\n")
+    (emb_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "dims": 8,
+                "count": 2,
+                "dtype": "float32",
+                "idx_to_label": {"0": "1.10.8.10", "1": "1.10.8.20"},
+            }
+        )
+    )
+    train = tmp_path / "train.fasta"
+    train.write_text(">d0\nACDE\n>d1\nACDE\n")
+    val = tmp_path / "val.fasta"
+    val.write_text(">d0\nACDE\n>MISSING\nACDE\n")
+
+    dm = EmbeddingDataModule(
+        train_fasta=str(train),
+        val_fasta=str(val),
+        test_fasta=str(train),
+        embedding_dir=str(emb_dir),
+        num_workers=0,
+    )
+    with pytest.raises(ValueError, match="1/2 domains not found"):
+        dm.setup("fit")
 
 
 def test_datamodule_fallback_rejects_negative_labels(tmp_path):

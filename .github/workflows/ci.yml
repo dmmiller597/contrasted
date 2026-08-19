@@ -22,3 +22,28 @@ jobs:
       - run: uv run ruff format --check .
       - run: uvx ty check src/
       - run: uv run pytest
+
+      - name: Build wheel/sdist and assert public contents
+        run: |
+          uv build -o /tmp/contrasted-wheel
+          uv run python tests/assert_wheel_contents.py \
+            /tmp/contrasted-wheel/contrasted-*-py3-none-any.whl \
+            /tmp/contrasted-wheel/contrasted-*.tar.gz
+
+      - name: Console script smoke
+        run: |
+          uv run contrasted-train --help
+          uv run contrasted-embed --help
+          uv run contrasted-make-db --help
+          uv run contrasted-annotate --help
+          uv run contrasted-build-concat-store --help
+
+      - name: Hydra entry config compose
+        run: |
+          uv run contrasted-train --config-name=train --cfg job >/dev/null
+          uv run contrasted-train --config-name=train/cath_s40_aa3di --cfg job >/dev/null
+          uv run contrasted-train --config-name=train/cath_s20_aa3di --cfg job >/dev/null
+          uv run contrasted-make-db --cfg job >/dev/null
+          uv run contrasted-make-db --config-name=make_db_s20 --cfg job >/dev/null
+          uv run contrasted-annotate --cfg job >/dev/null
+          uv run contrasted-embed --cfg job >/dev/null

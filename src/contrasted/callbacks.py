@@ -1,5 +1,7 @@
 """Lightning callbacks for training-time evaluation."""
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import lightning as L
 import torch
 from torch.utils.data import DataLoader
 
-from contrasted.model import ProjectionHead
+from contrasted.projection import ProjectionHead
 from contrasted.search import VectorIndex
 from contrasted.utils import accuracy
 
@@ -17,13 +19,34 @@ logger = logging.getLogger(__name__)
 class KNNEvaluationCallback(L.Callback):
     """1-NN evaluation using cosine similarity search.
 
-    Rebuilds the train-embedding index at the end of each validation epoch
-    (cadence controlled by ``eval_every_n_epochs``) and logs 1-NN accuracy.
+    Uses ``datamodule.knn_index_dataset`` when present (e.g. CATH-only gallery
+    while training on CATH+TED), otherwise ``datamodule.train_dataset``. The
+    index is rebuilt at the configured validation cadence.
+
+    Use ``knn_eval_batch_size`` (on the callback or datamodule) for large-batch
+    inference-only embedding collection; training ``batch_size`` can stay modest.
     """
 
-    def __init__(self, eval_every_n_epochs: int = 1):
+    def __init__(
+        self,
+        eval_every_n_epochs: int = 1,
+        knn_eval_batch_size: int | None = None,
+    ):
         super().__init__()
         self.eval_every_n_epochs = eval_every_n_epochs
+        self.knn_eval_batch_size = knn_eval_batch_size
+
+    def _eval_batch_size(self, datamodule) -> int:
+        if self.knn_eval_batch_size is not None:
+            return self.knn_eval_batch_size
+        if getattr(datamodule, "knn_eval_batch_size", None) is not None:
+            return datamodule.knn_eval_batch_size
+        return datamodule.batch_size
+
+    @staticmethod
+    def _index_dataset(datamodule):
+        index = getattr(datamodule, "knn_index_dataset", None)
+        return index if index is not None else datamodule.train_dataset
 
     def on_validation_epoch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule
@@ -36,7 +59,18 @@ class KNNEvaluationCallback(L.Callback):
         dm = getattr(trainer, "datamodule", None)
         if dm is None:
             return
-        acc = self._evaluate(pl_module, dm.train_dataset, dm.val_dataset, dm.batch_size)
+        index_dataset = self._index_dataset(dm)
+        if index_dataset is not dm.train_dataset:
+            logger.info(
+                "val/knn_accuracy: KNN index has %s samples (not full train)",
+                f"{len(index_dataset):,}",
+            )
+        acc = self._evaluate(
+            pl_module,
+            index_dataset,
+            dm.val_dataset,
+            self._eval_batch_size(dm),
+        )
         pl_module.log(
             "val/knn_accuracy", acc, on_epoch=True, prog_bar=True, sync_dist=True
         )
@@ -48,14 +82,20 @@ class KNNEvaluationCallback(L.Callback):
         if dm is None:
             return
         if getattr(dm, "test_datasets", None):
-            test_sets = list(dm.test_datasets.items())
+            named_test_sets = list(dm.test_datasets.items())
+            test_sets = (
+                [("", named_test_sets[0][1])]
+                if len(named_test_sets) == 1
+                else named_test_sets
+            )
         else:
             test_sets = [("", dm.test_dataset)]
 
+        eval_bs = self._eval_batch_size(dm)
+        index_dataset = self._index_dataset(dm)
+
         for test_name, test_dataset in test_sets:
-            acc = self._evaluate(
-                pl_module, dm.train_dataset, test_dataset, dm.batch_size
-            )
+            acc = self._evaluate(pl_module, index_dataset, test_dataset, eval_bs)
             key = f"test/{test_name}/knn_accuracy" if test_name else "test/knn_accuracy"
             pl_module.log(key, acc, on_epoch=True, sync_dist=True)
 
@@ -151,3 +191,15 @@ class HeadExportCallback(L.Callback):
 
         out = head_to_export.save(dirpath / self.filename)
         logger.info(f"Exported projection head to: {out}")
+
+
+class SetEpochCallback(L.Callback):
+    """Call ``set_epoch`` on the train batch sampler each epoch."""
+
+    def on_train_epoch_start(
+        self, trainer: L.Trainer, pl_module: L.LightningModule
+    ) -> None:
+        datamodule = getattr(trainer, "datamodule", None)
+        sampler = getattr(datamodule, "train_batch_sampler", None)
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(trainer.current_epoch)

@@ -8,8 +8,20 @@ import lightning as L
 import torch
 
 from contrasted.callbacks import HeadExportCallback
-from contrasted.losses import SupConLoss
-from contrasted.model import ContrastiveModel, ProjectionHead
+from contrasted.losses import CenterContrastiveLoss
+from contrasted.model import ContrastiveModel
+from contrasted.projection import ProjectionHead
+
+
+def _ccl(num_classes: int = 3, embedding_dim: int = 4) -> CenterContrastiveLoss:
+    return CenterContrastiveLoss(
+        num_classes=num_classes,
+        embedding_dim=embedding_dim,
+        margin=0.0,
+        scale=16.0,
+        lambda_=0.0,
+        label_smoothing=0.0,
+    )
 
 
 def test_head_export_uses_best_checkpoint(tmp_path):
@@ -24,13 +36,13 @@ def test_head_export_uses_best_checkpoint(tmp_path):
     best_ckpt = ckpt_dir / "best.ckpt"
     best_model = ContrastiveModel(
         projection_head=best_head,
-        loss=SupConLoss(temperature=0.1),
+        loss=_ccl(),
     )
     torch.save({"state_dict": best_model.state_dict()}, best_ckpt)
 
     model = ContrastiveModel(
         projection_head=final_head,
-        loss=SupConLoss(temperature=0.1),
+        loss=_ccl(),
     )
 
     ckpt_cb = MagicMock()

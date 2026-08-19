@@ -1,22 +1,16 @@
-input: data/cath-domain-seqs-S100.fa
+input: ???
+method: centroid
 k: 1
-id_to_annotation: data/cath-domain-sf-list.txt
-model_path: checkpoints/holdouts66.ckpt
-
-# Optional path to a prepared embedding directory. If unset or missing,
-# ProstT5 embeddings are generated on the fly from `input`. When set to a
-# non-existent path, on-the-fly embeddings are cached there for re-runs.
+id_to_annotation: null
+# Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
+model_path: aa3di_s40_seed40_head.pt
 embedding_dir: null
-
-index: data/vector_db/train.pt
+index: cath_s40_centroids.pt
 output_dir: outputs/annotations
 
-# Cosine-DISTANCE cutoff (distance = 1 - cosine_similarity, range [0, 2]).
-# A query whose nearest neighbour is farther than this is labelled "unknown".
-# NOTE: the default of 1.0 is intentionally permissive — it accepts any
-# neighbour with cosine similarity >= 0, i.e. it barely filters. Lower it
-# (e.g. 0.3-0.6) to require closer matches / higher-precision annotation.
-distance_cutoff: 1
+# Val-locked 99% precision gate for the canonical S40 head (seed 40).
+# Recalibrate if you swap the head.
+distance_cutoff: 0.24699
 return_distance: true
 return_confidence: false
 return_true_annotation: false
@@ -26,14 +20,3 @@ structure_dir: null
 tmalign_binary: TMalign
 compute_metrics: false
 num_thresholds: 50
-
-# ProstT5 encoding options (used only when on-the-fly encoding is triggered)
-embed:
-  model_name: Rostlab/ProstT5
-  half: true
-  max_residues: 4000
-  max_batch: 100
-  max_seq_len: 1000
-  dtype: float16
-  device: null
-  local_files_only: false

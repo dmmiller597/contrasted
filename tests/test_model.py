@@ -1,7 +1,14 @@
+import numpy as np
+import pytest
 import torch
 
-from contrasted.losses import ProxyAnchorLoss, SupConLoss
-from contrasted.model import ProjectionHead
+from contrasted.losses import CenterContrastiveLoss
+from contrasted.projection import ProjectionHead, project
+
+
+def test_projection_head_defaults_to_concat_input_dim():
+    head = ProjectionHead()
+    assert head.input_dim == 2048
 
 
 def test_projection_head_output_shape_and_normalized():
@@ -12,39 +19,102 @@ def test_projection_head_output_shape_and_normalized():
     assert torch.allclose(norms, torch.ones(32), atol=1e-5)
 
 
-def test_supcon_loss():
-    loss_fn = SupConLoss(temperature=0.07)
+def test_projection_head_accepts_concat_input_dim():
+    head = ProjectionHead(input_dim=2048, hidden_dim=512, output_dim=128)
+    out = head(torch.randn(8, 2048))
+    assert out.shape == (8, 128)
+    norms = torch.norm(out, p=2, dim=1)
+    assert torch.allclose(norms, torch.ones(8), atol=1e-5)
+
+
+def test_project_rejects_store_dim_mismatch():
+    head = ProjectionHead(input_dim=2048, hidden_dim=32, output_dim=8, dropout=0.0)
+    aa_only = np.zeros((4, 1024), dtype=np.float32)
+    with pytest.raises(ValueError, match="does not match projection head"):
+        project(head, aa_only, device="cpu")
+
+
+def test_center_contrastive_loss():
+    loss_fn = CenterContrastiveLoss(num_classes=4, embedding_dim=128)
     embeddings = torch.nn.functional.normalize(torch.randn(16, 128), dim=1)
+    embeddings.requires_grad_()
     labels = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2, 3, 3])
-    loss = loss_fn(embeddings, labels)
-    assert loss.ndim == 0
-    assert loss.item() > 0
+
+    out = loss_fn(embeddings, labels)
+    out.loss.backward()
+
+    assert out.loss.ndim == 0
+    assert torch.isfinite(out.loss)
+    assert embeddings.grad is not None
+    assert loss_fn.centers.grad is not None
+    assert "centers" in loss_fn.state_dict()
 
 
-def test_supcon_loss_all_singletons_zero():
-    """A batch with no positive pairs should yield zero loss (not NaN)."""
-    loss_fn = SupConLoss(temperature=0.07)
-    embeddings = torch.nn.functional.normalize(torch.randn(4, 128), dim=1)
-    labels = torch.tensor([0, 1, 2, 3])
-    loss = loss_fn(embeddings, labels)
-    assert torch.isfinite(loss)
-    assert loss.item() == 0.0
+def test_center_contrastive_loss_matches_paper_objective():
+    loss_fn = CenterContrastiveLoss(
+        num_classes=3,
+        embedding_dim=2,
+        margin=0.2,
+        scale=16.0,
+        lambda_=1.5,
+        label_smoothing=0.0,
+    )
+    embeddings = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.5], [-0.2, 1.0], [0.3, -0.7]]),
+        dim=1,
+    )
+    centers = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.5]]),
+        dim=1,
+    )
+    labels = torch.tensor([0, 1, 2])
+
+    with torch.no_grad():
+        loss_fn.centers.copy_(centers)
+
+    cosine = embeddings @ centers.T
+    batch_indices = torch.arange(embeddings.shape[0])
+    target_cosine = cosine[batch_indices, labels]
+    logits = loss_fn.scale * cosine
+    logits[batch_indices, labels] -= loss_fn.scale * loss_fn.margin
+    contrastive = torch.logsumexp(logits, dim=1) - loss_fn.scale * (
+        target_cosine - loss_fn.margin
+    )
+    center_constraint = loss_fn.lambda_ * (2.0 - 2.0 * target_cosine)
+    expected = (contrastive + center_constraint).mean()
+
+    assert torch.allclose(loss_fn(embeddings, labels).loss, expected)
 
 
-def test_supcon_loss_finite_with_mixed_singletons():
-    """Mixed batch (some classes singletons, some not) gives a finite loss."""
-    loss_fn = SupConLoss(temperature=0.07)
-    embeddings = torch.nn.functional.normalize(torch.randn(6, 128), dim=1)
-    labels = torch.tensor([0, 0, 1, 1, 2, 3])
-    loss = loss_fn(embeddings, labels)
-    assert torch.isfinite(loss)
-    assert loss.item() > 0
+def test_center_contrastive_label_smoothing_matches_documented_distribution():
+    loss_fn = CenterContrastiveLoss(
+        num_classes=3,
+        embedding_dim=2,
+        margin=0.1,
+        scale=8.0,
+        lambda_=0.7,
+        label_smoothing=0.2,
+    )
+    embeddings = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.5], [-0.25, 1.0]]), dim=1
+    )
+    labels = torch.tensor([0, 2])
+    centers = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.5]]), dim=1
+    )
+    with torch.no_grad():
+        loss_fn.centers.copy_(centers)
 
+    cosine = embeddings @ centers.T
+    logits = loss_fn.scale * cosine
+    logits[torch.arange(2), labels] -= loss_fn.scale * loss_fn.margin
+    target = torch.full_like(logits, 0.1)
+    target[torch.arange(2), labels] = 0.8
+    expected_proxy = -(target * torch.log_softmax(logits, dim=1)).sum(dim=1).mean()
+    target_cosine = cosine[torch.arange(2), labels]
+    expected_center = (loss_fn.lambda_ * (2.0 - 2.0 * target_cosine)).mean()
 
-def test_proxy_anchor_loss():
-    loss_fn = ProxyAnchorLoss(num_classes=4, embedding_dim=128)
-    embeddings = torch.nn.functional.normalize(torch.randn(16, 128), dim=1)
-    labels = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2, 3, 3])
-    loss = loss_fn(embeddings, labels)
-    assert loss.ndim == 0
-    assert loss.item() > 0
+    out = loss_fn(embeddings, labels)
+    assert torch.allclose(out.components["loss_h_proxy"], expected_proxy)
+    assert torch.allclose(out.components["loss_center"], expected_center)
+    assert torch.allclose(out.loss, expected_proxy + expected_center)

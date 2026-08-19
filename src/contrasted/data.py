@@ -1,14 +1,16 @@
-"""Data loading for protein embeddings from embedding directories."""
+"""Embedding store I/O and FASTA helpers for ContrasTED.
+
+Training uses ``contrasted.datamodule``. Annotate / make_db / embed / concat
+use this module.
+"""
 
 import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import lightning as L
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
 
 from contrasted.utils import require_exists
 
@@ -124,7 +126,12 @@ def resolve_fasta_paths(fasta_input: str | Path) -> dict[str, Path]:
 # ---------------------------------------------------------------------------
 
 
-def _read_ids_txt(path: Path) -> list[str]:
+def read_ids_txt(path: Path) -> list[str]:
+    """Domain ids from a store's ``ids.txt``, in row order.
+
+    Line *i* is authoritative for ``embeddings.npy`` row *i*, so this is part of
+    the store format contract rather than an internal helper.
+    """
     with open(path) as f:
         return [line.strip() for line in f if line.strip()]
 
@@ -168,6 +175,7 @@ class EmbeddingStore:
     id_to_idx: dict[str, int]
     idx_to_label: dict[int, str] | None = None
     embedding_dir: Path | None = field(default=None, compare=False)
+    metadata: dict[str, object] = field(default_factory=dict, compare=False)
 
     @classmethod
     def from_dir(
@@ -204,7 +212,7 @@ class EmbeddingStore:
                     f"embeddings.npy {key} {actual} != metadata {key} {expected}"
                 )
 
-        ids = _read_ids_txt(ids_path)
+        ids = read_ids_txt(ids_path)
         if len(ids) != embeddings.shape[0]:
             raise ValueError(
                 f"ids.txt has {len(ids)} entries but embeddings.npy has "
@@ -231,6 +239,7 @@ class EmbeddingStore:
             id_to_idx={id_: i for i, id_ in enumerate(ids)},
             idx_to_label=idx_to_label,
             embedding_dir=path,
+            metadata=metadata,
         )
 
     @property
@@ -325,216 +334,64 @@ class EmbeddingStore:
         _atomic("metadata.json", lambda p: p.write_text(json.dumps(metadata)))
 
         self.embedding_dir = path
+        self.metadata = metadata
         return path
 
 
 # ---------------------------------------------------------------------------
-# Store resolution: cached dir vs. on-the-fly encoding from FASTA
+# Store resolution and projection-head compatibility
 # ---------------------------------------------------------------------------
 
 
 def resolve_store(
     *,
     embedding_dir: str | Path | None,
-    fasta_paths: list[Path] | None = None,
-    labels_path: str | Path | None = None,
-    encode_config=None,
     require_labels: bool = False,
 ) -> "EmbeddingStore":
-    """Return an ``EmbeddingStore`` according to this precedence:
+    """Load a populated embedding store from ``embedding_dir``.
 
-    1. ``embedding_dir`` set and populated -> load from disk.
-    2. ``embedding_dir`` set but missing/empty -> encode ``fasta_paths`` and,
-       if possible, persist the 4-file layout to ``embedding_dir``.
-    3. ``embedding_dir`` unset -> encode ``fasta_paths`` in-memory.
-
-    A partially populated directory raises ``FileExistsError`` rather
-    than overwriting. The ``contrasted.embed`` module is imported lazily so
-    users who already have a prepared directory pay no encoding cost.
+    Missing, empty, and partially populated directories raise rather than
+    falling back to in-memory AA encoding.
     """
-    if embedding_dir is not None:
-        path = Path(embedding_dir)
-        if _is_populated_store(path):
-            return EmbeddingStore.from_dir(path, require_labels=require_labels)
-        if path.exists() and any(path.iterdir()):
-            raise FileExistsError(
-                f"{path} exists but is not a valid embedding directory. "
-                "Remove it or point embedding_dir elsewhere."
-            )
-
-    if not fasta_paths:
+    if embedding_dir is None or not str(embedding_dir).strip():
         raise ValueError(
-            "No embedding_dir and no fasta_paths provided; cannot build a store."
+            "embedding_dir is required. Pass a store built by "
+            "contrasted-build-concat-store (2048-d AA∥3Di) or "
+            "contrasted-embed (1024-d AA)."
         )
 
-    from contrasted.embed import encode_fasta  # lazy import
-
-    store = encode_fasta(
-        fasta_paths,
-        labels_path=labels_path,
-        config=encode_config,
+    path = Path(embedding_dir)
+    if _is_populated_store(path):
+        return EmbeddingStore.from_dir(path, require_labels=require_labels)
+    if path.exists() and any(path.iterdir()):
+        raise FileExistsError(
+            f"{path} exists but is not a valid embedding directory. "
+            "Remove it or point embedding_dir elsewhere."
+        )
+    raise FileNotFoundError(
+        f"Embedding store not found at {path}. Build one with "
+        "contrasted-build-concat-store (2048-d AA∥3Di) or contrasted-embed "
+        "(1024-d AA)."
     )
-    if require_labels and store.labels is None:
-        raise FileNotFoundError(
-            "require_labels=True but no labels_path was supplied for encoding."
+
+
+def validate_store_for_projection_head(
+    store: EmbeddingStore,
+    *,
+    input_dim: int,
+) -> None:
+    """Reject store metadata incompatible with a projection head."""
+    if input_dim != 2048:
+        return
+    modality = store.metadata.get("modality")
+    if modality != "aa_3di_concat":
+        raise ValueError(
+            f"Projection head input_dim 2048 requires an aa_3di_concat store, "
+            f"but metadata modality is {modality!r}. Build the store with "
+            "contrasted-build-concat-store."
         )
-
-    if embedding_dir is not None:
-        store.save(embedding_dir, source=",".join(str(p) for p in fasta_paths))
-        logger.info(f"Cached on-the-fly embeddings to: {embedding_dir}")
-
-    return store
 
 
 def _is_populated_store(path: Path) -> bool:
     required = ("embeddings.npy", "ids.txt", "metadata.json")
     return path.is_dir() and all((path / name).exists() for name in required)
-
-
-# ---------------------------------------------------------------------------
-# Dataset / DataModule
-# ---------------------------------------------------------------------------
-
-
-class EmbeddingDataset(Dataset[tuple[torch.Tensor, int]]):
-    """A subset of an embedding array, defined by row indices."""
-
-    def __init__(
-        self,
-        embeddings: np.ndarray | torch.Tensor,
-        labels: np.ndarray | torch.Tensor,
-        indices: list[int],
-    ):
-        self.embeddings = embeddings
-        self.labels = labels
-        self.indices = indices
-
-    def __len__(self) -> int:
-        return len(self.indices)
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
-        data_idx = self.indices[index]
-        embedding = self.embeddings[data_idx]
-        if isinstance(embedding, np.ndarray):
-            embedding = torch.from_numpy(np.array(embedding, copy=True)).float()
-        return embedding, int(self.labels[data_idx])
-
-
-class EmbeddingDataModule(L.LightningDataModule):
-    """Lightning data module backed by an ``EmbeddingStore``.
-
-    Each split (train/val/test) is defined by a FASTA file whose headers
-    name domains present in ``embedding_dir``. ``test_fasta`` may be a
-    single file, a directory of FASTAs, or a list of paths; each becomes
-    one entry in ``test_datasets``.
-    """
-
-    def __init__(
-        self,
-        train_fasta: str,
-        val_fasta: str,
-        test_fasta: str | list[str],
-        embedding_dir: str,
-        batch_size: int = 64,
-        num_workers: int = 4,
-        pin_memory: bool = True,
-    ):
-        super().__init__()
-        self.save_hyperparameters()
-
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-
-        self.train_fasta = Path(train_fasta)
-        self.val_fasta = Path(val_fasta)
-        self.test_fasta_paths = self._resolve_test_paths(test_fasta)
-        self.embedding_dir = Path(embedding_dir)
-        self.pin_memory = pin_memory and not torch.backends.mps.is_available()
-
-        self.store: EmbeddingStore | None = None
-        self.test_datasets: dict[str, EmbeddingDataset] = {}
-
-    @staticmethod
-    def _resolve_test_paths(
-        test_fasta: str | list[str],
-    ) -> dict[str, Path]:
-        if isinstance(test_fasta, list):
-            return {Path(p).stem: Path(p) for p in test_fasta}
-        return resolve_fasta_paths(Path(test_fasta))
-
-    @property
-    def num_classes(self) -> int:
-        return self.store.num_classes if self.store is not None else 0
-
-    def setup(self, stage: str | None = None):
-        if self.store is None:
-            self._load_store()
-
-        if stage in ("fit", None):
-            self.train_dataset = self._create_dataset(self.train_fasta)
-            self.val_dataset = self._create_dataset(self.val_fasta)
-
-        if stage in ("test", None):
-            self.test_datasets = {
-                name: self._create_dataset(path)
-                for name, path in self.test_fasta_paths.items()
-            }
-
-    def _load_store(self) -> None:
-        logger.info(f"Loading embeddings from: {self.embedding_dir}")
-        self.store = EmbeddingStore.from_dir(self.embedding_dir, require_labels=True)
-        if self.store.idx_to_label is None and self.store.labels is not None:
-            if self.store.labels.min() < 0:
-                raise ValueError(
-                    f"labels.npy in {self.embedding_dir} has negative values; "
-                    "class indices must be non-negative."
-                )
-            self.store.idx_to_label = {
-                i: str(i) for i in range(int(self.store.labels.max()) + 1)
-            }
-        logger.info(
-            f"Loaded {len(self.store.ids)} embeddings, "
-            f"{self.store.dim} dims, {self.num_classes} classes"
-        )
-
-    def _create_dataset(self, fasta_path: Path) -> EmbeddingDataset:
-        if self.store is None or self.store.labels is None:
-            raise RuntimeError("Embedding store with labels has not been loaded.")
-
-        domain_ids = load_domain_ids_from_fasta(fasta_path)
-        indices, _, missing_ids = self.store.resolve(domain_ids)
-
-        if missing_ids:
-            logger.warning(
-                f"{fasta_path.name}: {len(missing_ids)}/{len(domain_ids)} "
-                "domains not found"
-            )
-        if not indices:
-            raise ValueError(
-                f"{fasta_path.name}: No valid samples found. "
-                f"All {len(domain_ids)} domains are missing from "
-                "embedding directory."
-            )
-        logger.info(f"{fasta_path.name}: {len(indices)} samples")
-
-        return EmbeddingDataset(self.store.embeddings, self.store.labels, indices)
-
-    def train_dataloader(self) -> DataLoader:
-        return self._dataloader(self.train_dataset, shuffle=True)
-
-    def val_dataloader(self) -> DataLoader:
-        return self._dataloader(self.val_dataset)
-
-    def test_dataloader(self) -> DataLoader | list[DataLoader]:
-        loaders = [self._dataloader(ds) for ds in self.test_datasets.values()]
-        return loaders[0] if len(loaders) == 1 else loaders
-
-    def _dataloader(self, dataset: Dataset, *, shuffle: bool = False) -> DataLoader:
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=shuffle,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
-        )

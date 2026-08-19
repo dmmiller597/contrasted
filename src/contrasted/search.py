@@ -5,7 +5,10 @@ MPS, or CUDA. For CATH-sized databases a flat inner-product search is as fast
 as FAISS's own IndexFlatIP, with no extra dependency.
 """
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -26,7 +29,7 @@ class VectorIndex:
         self,
         embeddings: torch.Tensor,
         ids: list[str] | None = None,
-        labels: list[str | None] | None = None,
+        labels: Sequence[str | None] | None = None,
         *,
         normalized: bool = False,
     ):
@@ -41,7 +44,7 @@ class VectorIndex:
     def dim(self) -> int:
         return self.embeddings.shape[1]
 
-    def to(self, device: torch.device | str) -> "VectorIndex":
+    def to(self, device: torch.device | str) -> VectorIndex:
         self.embeddings = self.embeddings.to(device)
         return self
 
@@ -50,11 +53,13 @@ class VectorIndex:
         queries: torch.Tensor,
         k: int,
         *,
-        chunk_size: int | None = 4096,
+        chunk_size: int = 4096,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(similarities, indices)`` of the top ``k`` DB rows per query."""
         if k <= 0:
             raise ValueError(f"k must be positive, got {k}")
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         n_db = len(self)
         # Empty query set: return well-shaped empty results (stable for callers).
         if queries.numel() == 0:
@@ -70,11 +75,10 @@ class VectorIndex:
 
         queries = _normalize(queries.to(self.embeddings))
         k_eff = min(k, n_db)
-        step = chunk_size or queries.shape[0]
 
         scores, indices = [], []
-        for start in range(0, queries.shape[0], step):
-            s, i = (queries[start : start + step] @ self.embeddings.T).topk(
+        for start in range(0, queries.shape[0], chunk_size):
+            s, i = (queries[start : start + chunk_size] @ self.embeddings.T).topk(
                 k_eff, dim=1
             )
             scores.append(s)
@@ -104,9 +108,7 @@ class VectorIndex:
         logger.info(f"Saved index ({len(self)} vectors) to {path}")
 
     @classmethod
-    def load(
-        cls, path: str | Path, device: str | torch.device = "cpu"
-    ) -> "VectorIndex":
+    def load(cls, path: str | Path, device: str | torch.device = "cpu") -> VectorIndex:
         # Index files hold only a tensor + lists of str/None, which load under
         # the safe weights_only=True path (no arbitrary-pickle execution).
         data = torch.load(path, map_location="cpu", weights_only=True)
@@ -117,3 +119,53 @@ class VectorIndex:
             normalized=True,
         )
         return index.to(device)
+
+
+def as_centroid_index(index: VectorIndex) -> VectorIndex:
+    """Collapse labeled rows to empirical H-centroids (L2-normalized means)."""
+    if index.labels is None:
+        raise ValueError("Centroid index requires labels.")
+    if len(index.labels) != len(index):
+        raise ValueError(
+            "Centroid index requires one label per embedding row, "
+            f"got {len(index.labels)} labels for {len(index)} rows."
+        )
+
+    labeled_rows = [
+        row_index for row_index, label in enumerate(index.labels) if label is not None
+    ]
+    row_labels = [label for label in index.labels if label is not None]
+    if not row_labels:
+        raise ValueError("Centroid index requires at least one labeled row.")
+
+    ordered_labels = sorted(set(row_labels))
+    label_to_row = {label: row_index for row_index, label in enumerate(ordered_labels)}
+    device = index.embeddings.device
+    embedding_rows = torch.tensor(labeled_rows, dtype=torch.long, device=device)
+    # MPS has no float64 kernels, so compute there on CPU and return to MPS.
+    compute_device = torch.device("cpu") if device.type == "mps" else device
+    centroid_rows = torch.tensor(
+        [label_to_row[label] for label in row_labels],
+        dtype=torch.long,
+        device=compute_device,
+    )
+
+    values = index.embeddings.index_select(0, embedding_rows).to(compute_device)
+    values = values.to(dtype=torch.float64)
+    centroids = values.new_zeros((len(ordered_labels), index.dim))
+    centroids.index_add_(0, centroid_rows, values)
+    counts = torch.bincount(centroid_rows, minlength=len(ordered_labels)).to(centroids)
+    centroids /= counts.unsqueeze(1)
+
+    if torch.any(centroids.norm(dim=1) <= _EPS):
+        raise ValueError("Cannot normalize a zero centroid.")
+    centroids = _normalize(centroids)
+    if device.type == "mps":
+        centroids = centroids.to(device=device, dtype=index.embeddings.dtype)
+
+    return VectorIndex(
+        centroids,
+        ids=ordered_labels,
+        labels=ordered_labels,
+        normalized=True,
+    )

@@ -1,10 +1,10 @@
-"""Annotate protein sequences using k-NN search in a vector index.
+"""Annotate protein sequences using k-NN or centroid search in a vector index.
 
 The pipeline is a chain of composable stages:
 
 1. ``project`` -- project query embeddings through the head.
-2. ``knn_vote`` -- search the index and aggregate neighbour annotations.
-3. ``rerank_with_tmalign`` -- (optional) add TM-align structural scores.
+2. ``knn_vote`` -- search the domain or centroid index for annotations.
+3. ``attach_tmalign_scores`` -- (optional) attach TM-align structural scores.
 4. ``write_predictions_tsv`` -- atomically write the results as TSV.
 
 ``run`` composes everything from a Hydra config.
@@ -24,19 +24,16 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 
+from configs import hydra_config_dir
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_fasta_paths,
     resolve_store,
+    validate_store_for_projection_head,
 )
-from contrasted.embed import build_encode_config
-from contrasted.model import ProjectionHead, project
-from contrasted.search import VectorIndex
-from contrasted.tmalign import (
-    find_tmalign_binary,
-    resolve_structure_path,
-    run_tmalign,
-)
+from contrasted.data_home import locate
+from contrasted.projection import ProjectionHead, project
+from contrasted.search import VectorIndex, as_centroid_index
 from contrasted.utils import get_device, load_labels, require_exists
 
 logger = logging.getLogger(__name__)
@@ -142,7 +139,7 @@ def knn_vote(
     distance_cutoff: float,
     id_to_annotation: dict[str, int],
     idx_to_annotation: dict[int, str],
-    search_chunk_size: int | None = None,
+    search_chunk_size: int = 4096,
 ) -> list[Prediction]:
     """Search the index and aggregate k-NN votes into ``Prediction``s.
 
@@ -211,11 +208,11 @@ def attach_true_annotations(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: TM-align rerank
+# Stage 2: attach TM-align scores
 # ---------------------------------------------------------------------------
 
 
-def rerank_with_tmalign(
+def attach_tmalign_scores(
     predictions: list[Prediction],
     index: VectorIndex,
     structure_dir: Path,
@@ -224,11 +221,14 @@ def rerank_with_tmalign(
 ) -> None:
     """Attach TM-align scores for each prediction's top-1 DB neighbour.
 
-    Populates ``tm_score`` / ``rmsd`` / ``tm_coverage`` in place; logs and
-    skips predictions whose structures cannot be located.
+    Populates ``tm_score`` / ``rmsd`` / ``tm_coverage`` in place. Does not
+    change predicted labels. Logs and skips predictions whose structures
+    cannot be located.
     """
+    from contrasted.tmalign import resolve_structure_path, run_tmalign
+
     if index.ids is None:
-        logger.warning("Index has no ids; cannot run TM-align rerank.")
+        logger.warning("Index has no ids; cannot attach TM-align scores.")
         return
 
     for p in predictions:
@@ -464,13 +464,32 @@ def log_summary(output_path: Path, summary: dict, elapsed: float) -> None:
 
 
 def run(cfg: DictConfig) -> None:
-    """Annotate protein sequences using k-NN search (Hydra config)."""
+    """Annotate protein sequences using k-NN or centroid search."""
     device = get_device()
     logger.info(f"Using device: {device}")
 
+    method = str(cfg.get("method", "knn"))
+    if method not in {"knn", "centroid"}:
+        raise ValueError(f"method must be 'knn' or 'centroid', got {method!r}")
+
+    tm_align_enabled = bool(cfg.get("tm_align", False))
+    if method == "centroid" and tm_align_enabled:
+        raise ValueError(
+            "method='centroid' cannot be combined with tm_align=true because "
+            "centroid ids are superfamily labels, not domain structure ids; "
+            "use method='knn' or disable tm_align"
+        )
+
+    embedding_dir = cfg.get("embedding_dir")
+    if embedding_dir is None or not str(embedding_dir).strip():
+        raise ValueError(
+            "embedding_dir is required for contrasted-annotate. Pass a store "
+            "built by contrasted-build-concat-store or contrasted-embed."
+        )
+
     input_path = Path(cfg.input)
-    model_path = Path(cfg.model_path)
-    index_path = Path(cfg.index)
+    model_path = locate(cfg.model_path, kind="Projection head")
+    index_path = locate(cfg.index, kind="Vector index")
     annotation_path = (
         Path(cfg.id_to_annotation) if cfg.get("id_to_annotation") else None
     )
@@ -478,15 +497,14 @@ def run(cfg: DictConfig) -> None:
     input_paths = resolve_fasta_paths(input_path)
     if not input_paths:
         raise FileNotFoundError(f"No FASTA files found at: {input_path}")
-    require_exists(model_path, "Model checkpoint")
-    require_exists(index_path, "Vector index")
     if annotation_path:
         require_exists(annotation_path, "Annotation file")
 
-    tm_align_enabled = bool(cfg.get("tm_align", False))
     structure_dir = Path(cfg.structure_dir) if cfg.get("structure_dir") else None
     tmalign_binary = str(cfg.get("tmalign_binary", "TMalign"))
     if tm_align_enabled:
+        from contrasted.tmalign import find_tmalign_binary
+
         if structure_dir is None:
             raise ValueError("structure_dir must be set when tm_align=true")
         if not structure_dir.is_dir():
@@ -503,6 +521,15 @@ def run(cfg: DictConfig) -> None:
     logger.info(f"Loading vector index from: {index_path}")
     index = VectorIndex.load(index_path, device=device)
     logger.info(f"Loaded index with {len(index)} vectors")
+    if method == "centroid":
+        index = as_centroid_index(index)
+        k = 1
+        logger.info(
+            "Centroid annotation collapsed the index to %d H-centroids and forces k=1",
+            len(index),
+        )
+    else:
+        k = int(cfg.k)
 
     if annotation_path:
         logger.info(f"Loading annotations from: {annotation_path}")
@@ -528,18 +555,16 @@ def run(cfg: DictConfig) -> None:
     output_dir = Path(cfg.get("output_dir", "outputs/annotations"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    embedding_dir = cfg.get("embedding_dir")
-    store = resolve_store(
-        embedding_dir=embedding_dir,
-        fasta_paths=list(input_paths.values()),
-        encode_config=build_encode_config(cfg.get("embed")),
+    store = resolve_store(embedding_dir=embedding_dir)
+    validate_store_for_projection_head(
+        store,
+        input_dim=head.input_dim,
     )
 
     return_distance = bool(cfg.get("return_distance", True))
     return_confidence = bool(cfg.get("return_confidence", False))
     batch_size = int(cfg.get("batch_size", 2048))
-    search_chunk_size = cfg.get("search_chunk_size")
-    k = int(cfg.k)
+    search_chunk_size = int(cfg.get("search_chunk_size", 4096))
     distance_cutoff = float(cfg.distance_cutoff)
 
     # Loop-invariant: truth annotations are only attached/written when both
@@ -581,7 +606,7 @@ def run(cfg: DictConfig) -> None:
         if return_true_annotation:
             attach_true_annotations(predictions, id_to_annotation, idx_to_annotation)
         if tm_align_enabled and structure_dir is not None:
-            rerank_with_tmalign(
+            attach_tmalign_scores(
                 predictions, index, structure_dir, binary=tmalign_binary
             )
 
@@ -608,7 +633,7 @@ def run(cfg: DictConfig) -> None:
         log_summary(output_path, summarize(predictions), time.time() - start)
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="annotate")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="annotate")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
