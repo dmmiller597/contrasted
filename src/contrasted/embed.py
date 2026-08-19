@@ -23,6 +23,7 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
+from configs import hydra_config_dir
 from contrasted.data import (
     CANONICAL_EMBEDDING_FILES,
     EmbeddingStore,
@@ -421,7 +422,7 @@ def run(cfg: DictConfig) -> None:
     logger.info(f"Wrote embedding directory: {out}")
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="embed")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="embed")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
