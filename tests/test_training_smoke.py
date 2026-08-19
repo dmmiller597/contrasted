@@ -15,9 +15,10 @@ import numpy as np
 import torch
 
 from contrasted.callbacks import KNNEvaluationCallback
-from contrasted.data import EmbeddingDataModule
+from contrasted.datamodule import EmbeddingDataModule
 from contrasted.losses import CenterContrastiveLoss
-from contrasted.model import ContrastiveModel, ProjectionHead
+from contrasted.model import ContrastiveModel
+from contrasted.projection import ProjectionHead
 
 
 def _ccl(embedding_dim: int = 16, num_classes: int = 4) -> CenterContrastiveLoss:
@@ -192,3 +193,28 @@ def test_knn_callback_logs_single_test_metric_with_train_index(tmp_path):
     test_metrics = trainer.callback_metrics
     knn_metrics = {key for key in test_metrics if "knn_accuracy" in key}
     assert knn_metrics == {"test/knn_accuracy"}
+
+
+def test_knn_callback_uses_knn_index_dataset_when_configured(tmp_path):
+    torch.manual_seed(0)
+    embedding_dir = _make_synthetic_embedding_dir(tmp_path, dim=32)
+    # Smaller CATH-style gallery: reuse val ids as the knn index fasta.
+    knn_fasta = tmp_path / "knn_index.fasta"
+    knn_fasta.write_text((tmp_path / "val.fasta").read_text())
+
+    dm = EmbeddingDataModule(
+        train_fasta=str(tmp_path / "train.fasta"),
+        val_fasta=str(tmp_path / "val.fasta"),
+        test_fasta=str(tmp_path / "test.fasta"),
+        embedding_dir=str(embedding_dir),
+        knn_index_fasta=str(knn_fasta),
+        batch_size=32,
+        num_workers=0,
+        pin_memory=False,
+    )
+    dm.setup("fit")
+    assert dm.knn_index_dataset is not None
+    assert len(dm.knn_index_dataset) < len(dm.train_dataset)
+
+    callback = KNNEvaluationCallback(eval_every_n_epochs=1)
+    assert callback._index_dataset(dm) is dm.knn_index_dataset

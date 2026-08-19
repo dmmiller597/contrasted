@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 
 from contrasted.annotate import run as annotate_run
 from contrasted.make_db import run as make_db_run
-from contrasted.model import ProjectionHead
+from contrasted.projection import ProjectionHead
 
 
 def _write_embedding_dir(

@@ -254,14 +254,26 @@ def test_validate_store_for_projection_head_rejects_explicit_aa_modality(tmp_pat
         validate_store_for_projection_head(loaded, input_dim=2048)
 
 
-@pytest.mark.parametrize("metadata", [{}, {"modality": "aa_3di_concat"}])
-def test_validate_store_for_projection_head_accepts_compatible_metadata(metadata):
+def test_validate_store_for_projection_head_accepts_aa_3di_concat_modality():
     store = EmbeddingStore(
         embeddings=np.zeros((1, 2048), dtype=np.float32),
         ids=["a"],
         labels=None,
         id_to_idx={"a": 0},
-        metadata=metadata,
+        metadata={"modality": "aa_3di_concat"},
     )
 
     validate_store_for_projection_head(store, input_dim=2048)
+
+
+def test_validate_store_for_projection_head_rejects_missing_modality():
+    store = EmbeddingStore(
+        embeddings=np.zeros((1, 2048), dtype=np.float32),
+        ids=["a"],
+        labels=None,
+        id_to_idx={"a": 0},
+        metadata={},
+    )
+
+    with pytest.raises(ValueError, match="requires an aa_3di_concat store"):
+        validate_store_for_projection_head(store, input_dim=2048)

@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from contrasted.losses import CenterContrastiveLoss
-from contrasted.model import ProjectionHead, project
+from contrasted.projection import ProjectionHead, project
 
 
 def test_projection_head_defaults_to_concat_input_dim():
@@ -84,3 +84,37 @@ def test_center_contrastive_loss_matches_paper_objective():
     expected = (contrastive + center_constraint).mean()
 
     assert torch.allclose(loss_fn(embeddings, labels).loss, expected)
+
+
+def test_center_contrastive_label_smoothing_matches_documented_distribution():
+    loss_fn = CenterContrastiveLoss(
+        num_classes=3,
+        embedding_dim=2,
+        margin=0.1,
+        scale=8.0,
+        lambda_=0.7,
+        label_smoothing=0.2,
+    )
+    embeddings = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.5], [-0.25, 1.0]]), dim=1
+    )
+    labels = torch.tensor([0, 2])
+    centers = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.5]]), dim=1
+    )
+    with torch.no_grad():
+        loss_fn.centers.copy_(centers)
+
+    cosine = embeddings @ centers.T
+    logits = loss_fn.scale * cosine
+    logits[torch.arange(2), labels] -= loss_fn.scale * loss_fn.margin
+    target = torch.full_like(logits, 0.1)
+    target[torch.arange(2), labels] = 0.8
+    expected_proxy = -(target * torch.log_softmax(logits, dim=1)).sum(dim=1).mean()
+    target_cosine = cosine[torch.arange(2), labels]
+    expected_center = (loss_fn.lambda_ * (2.0 - 2.0 * target_cosine)).mean()
+
+    out = loss_fn(embeddings, labels)
+    assert torch.allclose(out.components["loss_h_proxy"], expected_proxy)
+    assert torch.allclose(out.components["loss_center"], expected_center)
+    assert torch.allclose(out.loss, expected_proxy + expected_center)
