@@ -8,6 +8,7 @@ as FAISS's own IndexFlatIP, with no extra dependency.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -28,7 +29,7 @@ class VectorIndex:
         self,
         embeddings: torch.Tensor,
         ids: list[str] | None = None,
-        labels: list[str | None] | None = None,
+        labels: Sequence[str | None] | None = None,
         *,
         normalized: bool = False,
     ):
