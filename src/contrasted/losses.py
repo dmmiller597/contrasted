@@ -55,7 +55,9 @@ def _normalized_softmax_per_sample(
     """Per-sample CE and target cosines for a normalized proxy bank.
 
     ``bank`` is normalized differentiably (no in-place parameter mutation).
-    Embeddings are cast to FP32 before the similarity matrix.
+    Embeddings are promoted to FP32 before the similarity expression. Under a
+    surrounding mixed-precision autocast context, PyTorch may still execute
+    eligible matrix operations in the configured autocast dtype.
     """
     if embeddings.ndim != 2:
         raise ValueError("embeddings must have shape (batch_size, embedding_dim).")
