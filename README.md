@@ -30,7 +30,7 @@ Weights are not in git. Put them in `$CONTRASTED_DATA_DIR` (default `~/.cache/co
 | `cath_s40_centroids.pt` | CATH S40 centroid index |
 | `aa3di_s20_seed40_head.pt` | Optional S20 head |
 
-The Zenodo DOI is not minted yet. Filenames, sha256 hashes, and the S40 cutoff (`0.24699`) are in `src/contrasted/assets.json`. `contrasted-annotate` looks in the cache directory for those names if the path you pass does not exist.
+The Zenodo DOI is not minted yet. Filenames, sha256 hashes, and the S40 cutoff (`0.24699`) are in `src/contrasted/registry.json`. `contrasted-annotate` looks in `$CONTRASTED_DATA_DIR` for those names if the path you pass does not exist.
 
 ```bash
 export CONTRASTED_DATA_DIR="${CONTRASTED_DATA_DIR:-$HOME/.cache/contrasted}"
