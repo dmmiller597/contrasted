@@ -1,8 +1,0 @@
-defaults:
-  - make_db
-  - _self_
-
-model_path: checkpoints/cath_ccl_aa3di/s20_seed40.ckpt
-index_path: data/vector_db/cath_s100_c123_s20.pt
-embedding_dir: data/embeddings/cath-s100-aa3di-concat
-label_file: data/cath-domain-sf-list-c123.txt
