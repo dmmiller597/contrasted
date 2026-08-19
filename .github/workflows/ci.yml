@@ -26,7 +26,7 @@ jobs:
       - name: Build wheel/sdist and assert public contents
         run: |
           uv build -o /tmp/contrasted-wheel
-          uv run python reports/v1-src-release/assert_wheel_contents.py \
+          uv run python tests/assert_wheel_contents.py \
             /tmp/contrasted-wheel/contrasted-*-py3-none-any.whl \
             /tmp/contrasted-wheel/contrasted-*.tar.gz
 
@@ -41,8 +41,9 @@ jobs:
       - name: Hydra entry config compose
         run: |
           uv run contrasted-train --config-name=train --cfg job >/dev/null
-          uv run contrasted-train --config-name=cath_s40_aa3di_concat_ccl --cfg job >/dev/null
-          uv run contrasted-train --config-name=cath_s20_aa3di_concat_ccl --cfg job >/dev/null
+          uv run contrasted-train --config-name=train/cath_s40_aa3di --cfg job >/dev/null
+          uv run contrasted-train --config-name=train/cath_s20_aa3di --cfg job >/dev/null
           uv run contrasted-make-db --cfg job >/dev/null
+          uv run contrasted-make-db --config-name=make_db_s20 --cfg job >/dev/null
           uv run contrasted-annotate --cfg job >/dev/null
           uv run contrasted-embed --cfg job >/dev/null
