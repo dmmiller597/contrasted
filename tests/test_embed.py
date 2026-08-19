@@ -148,7 +148,7 @@ def _patched_hf_components(fake_model_cls, fake_tokenizer_cls):
     tokenizer_cls.from_pretrained.return_value = fake_tokenizer_cls()
     with patch("contrasted.embed._load_t5_components") as load_components:
         load_components.return_value = (model_cls, tokenizer_cls)
-        yield
+        yield model_cls, tokenizer_cls
 
 
 def test_encoder_pools_from_residue_tokens_only():
@@ -160,6 +160,29 @@ def test_encoder_pools_from_residue_tokens_only():
     # Hidden states are position-indexed. For s_len=3, mean of hidden[1:4] = 2.0.
     # If the slice wrongly started at 0 (prefix included), it'd be 1.5.
     np.testing.assert_allclose(out["a"], np.full(4, 2.0, dtype=np.float32))
+
+
+def test_encoder_local_files_only_passed_to_hf_loaders():
+    FakeModel, FakeTokenizer = _make_fake_hf_modules(dim=4)
+    with _patched_hf_components(FakeModel, FakeTokenizer) as (
+        model_cls,
+        tokenizer_cls,
+    ):
+        enc = ProstT5Encoder(
+            EncodeConfig(
+                device=torch.device("cpu"),
+                dtype="float32",
+                local_files_only=True,
+            )
+        )
+        enc.encode({"a": "ACG"})
+
+    model_cls.from_pretrained.assert_called_once_with(
+        "Rostlab/ProstT5", local_files_only=True
+    )
+    tokenizer_cls.from_pretrained.assert_called_once_with(
+        "Rostlab/ProstT5", do_lower_case=False, local_files_only=True
+    )
 
 
 # ---------------------------------------------------------------------------

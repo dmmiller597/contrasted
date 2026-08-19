@@ -61,6 +61,7 @@ class EncodeConfig:
     max_seq_len: int = 1000
     dtype: str = "float16"  # storage dtype for saved embeddings
     device: torch.device | None = None
+    local_files_only: bool = False  # do not download from Hugging Face
 
 
 # ---------------------------------------------------------------------------
@@ -172,14 +173,19 @@ class ProstT5Encoder:
         T5EncoderModel, T5Tokenizer = _load_t5_components()
 
         logger.info(f"Loading ProstT5 from: {self.config.model_name}")
-        model = T5EncoderModel.from_pretrained(self.config.model_name).to(self._device)
+        model = T5EncoderModel.from_pretrained(
+            self.config.model_name,
+            local_files_only=self.config.local_files_only,
+        ).to(self._device)
         model.eval()
         if self._half:
             model = model.half()
             logger.info("Using half precision")
         self._model = model
         self._tokenizer = T5Tokenizer.from_pretrained(
-            self.config.model_name, do_lower_case=False
+            self.config.model_name,
+            do_lower_case=False,
+            local_files_only=self.config.local_files_only,
         )
 
     def close(self) -> None:
@@ -395,6 +401,7 @@ def build_encode_config(cfg: DictConfig | None) -> EncodeConfig:
         max_seq_len=int(cfg.get("max_seq_len", 1000)),
         dtype=str(cfg.get("dtype", "float16")),
         device=torch.device(dev_str) if (dev_str := cfg.get("device")) else None,
+        local_files_only=bool(cfg.get("local_files_only", False)),
     )
 
 
