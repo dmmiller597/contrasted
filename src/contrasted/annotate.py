@@ -24,12 +24,14 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 
+from configs import hydra_config_dir
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_fasta_paths,
     resolve_store,
     validate_store_for_projection_head,
 )
+from contrasted.data_home import locate
 from contrasted.projection import ProjectionHead, project
 from contrasted.search import VectorIndex, as_centroid_index
 from contrasted.utils import get_device, load_labels, require_exists
@@ -486,8 +488,8 @@ def run(cfg: DictConfig) -> None:
         )
 
     input_path = Path(cfg.input)
-    model_path = Path(cfg.model_path)
-    index_path = Path(cfg.index)
+    model_path = locate(cfg.model_path, kind="Projection head")
+    index_path = locate(cfg.index, kind="Vector index")
     annotation_path = (
         Path(cfg.id_to_annotation) if cfg.get("id_to_annotation") else None
     )
@@ -495,8 +497,6 @@ def run(cfg: DictConfig) -> None:
     input_paths = resolve_fasta_paths(input_path)
     if not input_paths:
         raise FileNotFoundError(f"No FASTA files found at: {input_path}")
-    require_exists(model_path, "Model checkpoint")
-    require_exists(index_path, "Vector index")
     if annotation_path:
         require_exists(annotation_path, "Annotation file")
 
@@ -633,7 +633,7 @@ def run(cfg: DictConfig) -> None:
         log_summary(output_path, summarize(predictions), time.time() - start)
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="annotate")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="annotate")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
