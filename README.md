@@ -4,8 +4,15 @@
 
 Supervised contrastive learning for CATH protein superfamily classification.
 
+Headline ContrasTED uses ProstT5 AA∥3Di (2048-d) inputs and a 128-d CCL projection head. Annotation is nearest-centroid in that space, with a distance cutoff.
 
 ## Installation
+
+```bash
+pip install contrasted
+```
+
+From a clone:
 
 ```bash
 git clone https://github.com/dmmiller597/contrasted
@@ -13,134 +20,107 @@ cd contrasted
 uv sync
 ```
 
-`uv sync` installs everything needed for annotation, vector database creation, embedding, and training, plus the `dev` group (`pytest`, `ruff`, `ty`). Optional extras:
+## Get the production head and CATH index
 
-- `uv sync --extra cloud` -- Modal dependency for the cloud embedding scripts under `scripts/`.
-- `uv sync --extra analysis` -- libraries used by the exploratory scripts under `scripts/` (polars, matplotlib, scipy, umap, etc.).
+Weights are not in git. Put them in `$CONTRASTED_DATA_DIR` (default `~/.cache/contrasted`):
 
-<details>
-<summary><strong>Without uv</strong></summary>
+| File | Role |
+|------|------|
+| `aa3di_s40_seed40_head.pt` | Canonical S40 AA∥3Di head |
+| `cath_s40_centroids.pt` | CATH S40 centroid index |
+| `aa3di_s20_seed40_head.pt` | Optional S20 head |
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-```
-
-</details>
-
-## Quick Start
-
-Four console scripts are installed with the package:
-
-**`contrasted-make-db`**<br>
-Build a vector database from a trained checkpoint. Reference sequences can be supplied as FASTA (encoded in-process).
-
-**`contrasted-annotate`**<br>
-Annotate query sequences against a vector index. Queries as FASTA; set `compute_metrics=true` to emit `metrics.json` and `selective_curve.tsv` when ground-truth labels are available.
-
-**`contrasted-embed`**<br>
-Encode a FASTA into a reusable ProstT5 embedding directory (four-file layout).
-
-**`contrasted-train`**<br>
-Train the projection head; Hydra config overrides apply on the CLI.
-
-All scripts are Hydra entry points; override any config key on the command line.
-
-### Build a vector database
+The Zenodo DOI is not minted yet. Filenames, sha256 hashes, and the S40 cutoff (`0.24699`) are in `src/contrasted/assets.json`. `contrasted-annotate` looks in the cache directory for those names if the path you pass does not exist.
 
 ```bash
-uv run contrasted-make-db \
-    input=data/cath-domain-seqs-S100-c123.fasta \
-    model_path=checkpoints/best.ckpt \
-    index_path=data/vector_db/cath-s100-c123.pt \
-    label_file=data/cath-domain-sf-list.txt
+export CONTRASTED_DATA_DIR="${CONTRASTED_DATA_DIR:-$HOME/.cache/contrasted}"
+mkdir -p "$CONTRASTED_DATA_DIR"
+# wget the user bundle into $CONTRASTED_DATA_DIR once the DOI is live
 ```
 
-`contrasted-make-db` encodes the reference FASTA with ProstT5 in-process, projects the embeddings through the checkpoint, and writes a vector database. `embedding_dir=<path>` may optionally be set to reuse or cache ProstT5 embeddings for the reference set.
+## Quick start
 
-### Annotate a FASTA
+You still pass a prebuilt query `EmbeddingStore` (`embedding_dir`). Embed FASTA first, then annotate against the downloaded CATH index. You do not run `make-db` unless you want a custom reference set.
 
-Once the vector database exists, annotate query domains against it:
+### 1. Embed queries
 
-```bash
-uv run contrasted-annotate \
-    input=data/cath-domain-seqs-S100-c123.fasta \
-    model_path=checkpoints/best.ckpt \
-    index=data/vector_db/cath-s100-c123.pt
-```
-
-`contrasted-annotate` encodes the query FASTA, projects the embeddings through the checkpoint, searches the vector database, and writes the TSV.
-
-For repeat runs, set `embedding_dir=path/to/cache` -- on-the-fly embeddings are written there once and loaded on subsequent runs:
-
-```bash
-uv run contrasted-annotate \
-    input=data/cath-domain-seqs-S100-c123.fasta \
-    model_path=checkpoints/best.ckpt \
-    index=data/vector_db/cath-s100-c123.pt \
-    embedding_dir=cache/cath-s100-c123-prostt5
-```
-
-Or precompute explicitly:
+AA-only (1024-d):
 
 ```bash
 uv run contrasted-embed \
-    input=data/cath-domain-seqs-S100-c123.fasta \
-    output_dir=cache/cath-s100-c123-prostt5
+  input=queries.fasta \
+  output_dir=data/embeddings/queries-aa
 ```
 
-After `uv sync --extra cloud`, the same ProstT5 implementation (`contrasted.embed`) runs on Modal for large jobs: sharded FASTA, GPU workers, and a Modal Volume for outputs. Example:
+Headline AA∥3Di (2048-d) needs an AA store plus 3Di vectors, then:
 
 ```bash
-modal run scripts/embed_prostt5_modal.py \
-  --fasta data/cath-domain-seqs-S100-c123.fasta \
-  --labels data/cath-domain-sf-list.txt \
-  --output data/cath-s100-c123-prostt5-modal
+uv run contrasted-build-concat-store \
+  --aa-store data/embeddings/queries-aa \
+  --di-cache-npy path/to/3di_embeddings.npy \
+  --di-cache-ids path/to/3di_embedding_ids.txt \
+  --output-dir data/embeddings/queries-aa3di
 ```
 
-Use `--throughput-test` for a short GPU sanity check (Modal booleans are flags, e.g. `--throughput-test`, not `--throughput-test true`).
+Direct FASTA or PDB embedding inside `contrasted-annotate` is planned. Until then, `embedding_dir` is required.
 
-## Data Format
+### 2. Annotate
+
+```bash
+uv run contrasted-annotate \
+  input=queries.fasta \
+  embedding_dir=data/embeddings/queries-aa3di
+```
+
+Defaults: centroid search, the S40 head and CATH centroid index from `$CONTRASTED_DATA_DIR`, cutoff `0.24699`. Override `model_path` / `index` with a path or a filename that lives in the cache directory.
+
+Output is `annotations.tsv` (`query_id`, `predicted_annotation`, `distance`, …). Neighbours beyond `distance_cutoff` become `unknown`. Queries missing from the store become `missing_embedding`.
+
+### Custom reference set
+
+```bash
+uv run contrasted-make-db \
+  input=reference.fasta \
+  embedding_dir=data/embeddings/reference-aa3di \
+  label_file=reference-labels.txt \
+  index_path=my_index.pt
+```
+
+Then annotate with `index=my_index.pt`. Use `--config-name=make_db_s20` for the S20 head.
+
+### Train (optional)
+
+```bash
+uv run contrasted-train --config-name=train/cath_s40_aa3di
+uv run contrasted-train --config-name=train/cath_s20_aa3di
+```
+
+Both use the reported center-contrastive recipe and `input_dim: 2048`. Override `datamodule.embedding_dir` and the split FASTAs to match local stores.
+
+## Data format
 
 Inputs:
-- FASTA header: `>cath|{version}|{domain_id}/{start}-{end}` (CATH) or `>AF-..._TED03`, `>plain_id` (generic).
-- Embedding directory:
-  - `embeddings.npy` -- `(N, D)` float16/float32
-  - `labels.npy` -- `(N,)` int64 (optional for inference, required for training/eval)
-  - `ids.txt` -- one domain ID per line
-  - `metadata.json` -- at minimum `dims`/`count`/`dtype`; may also include `idx_to_label`
-  - `id_to_row.npy` -- optional precomputed `id -> row` mapping
 
-Outputs:
-- `annotations.tsv`: `query_id`, `predicted_annotation`, `distance`, `confidence`
-- `metrics.json`, `selective_curve.tsv` (when `compute_metrics=true` and truth labels are available)
+- FASTA header: `>cath|{version}|{domain_id}/{start}-{end}` (CATH) or plain ids.
+- Embedding directory (`EmbeddingStore`):
+  - `embeddings.npy` `(N, D)` float16/float32
+  - `labels.npy` `(N,)` int64 (optional for inference)
+  - `ids.txt` one domain id per line
+  - `metadata.json` with at least `dims` / `count` / `dtype`
+  - Headline stores set `modality: aa_3di_concat` with `aa_dim` / `di_dim`
 
-## Training
+A head with `input_dim=2048` requires an AA∥3Di store. AA-only ProstT5 stores are 1024-d.
 
-Most users can start from an existing checkpoint and use `contrasted-make-db` / `contrasted-annotate`. To train a new projection model:
+## Console scripts
 
-```bash
-uv run contrasted-train
-uv run contrasted-train +experiment=supcon datamodule.batch_size=512
-```
+| Script | Role |
+|--------|------|
+| `contrasted-embed` | Encode FASTA with ProstT5 (AA) |
+| `contrasted-build-concat-store` | Build a 2048-d AA∥3Di `EmbeddingStore` |
+| `contrasted-annotate` | Centroid or k-NN annotate against an index |
+| `contrasted-make-db` | Project a reference set into a vector index |
+| `contrasted-train` | Train the projection head (Hydra) |
 
-## Development
+## Citation
 
-```bash
-uv sync
-uv run ruff check --fix . && uv run ruff format .
-uv run pytest
-uvx ty check src/
-```
-
-<details>
-<summary><strong>Without uv</strong></summary>
-
-```bash
-python -m pip install -e . --group dev
-ruff check --fix . && ruff format .
-pytest
-```
-
-</details>
+Paper, Zenodo archive, and the analysis/reproduction tree will be linked here once they are public. This repository is the installable method.
