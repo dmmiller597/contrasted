@@ -1,11 +1,9 @@
-input: data/cath-domain-seqs-S100-c123.fasta
-model_path: checkpoints/cath_ccl_aa3di/s40_seed40.ckpt
-index_path: data/vector_db/cath_s100_c123_s40.pt
-
-# Prebuilt 2048-d AA∥3Di store (contrasted-build-concat-store).
-embedding_dir: data/embeddings/cath-s100-aa3di-concat
-
+input: ???
+# Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
+model_path: aa3di_s40_seed40_head.pt
+index_path: index.pt
+embedding_dir: null
 ids: null
-label_file: data/cath-domain-sf-list-c123.txt
+label_file: null
 project_batch_size: 4096
 dtype: float16

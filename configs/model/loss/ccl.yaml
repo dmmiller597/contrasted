@@ -1,6 +1,5 @@
 # Production ContrasTED Center-Contrastive hyperparameters (CCL AA∥3Di).
-# Matches checkpoints/cath_ccl_aa3di/PROVENANCE.txt:
-#   scale=32, margin=0.3, lambda=1.0, label_smoothing=0.1
+# scale=32, margin=0.3, lambda=1.0, label_smoothing=0.1
 _target_: contrasted.losses.CenterContrastiveLoss
 embedding_dim: ${model.projection_head.output_dim}
 num_classes: 0

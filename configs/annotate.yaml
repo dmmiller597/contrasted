@@ -1,22 +1,16 @@
-input: data/cath-domain-seqs-S100-c123.fasta
-# Annotation strategy. Centroid is the manuscript headline method.
+input: ???
 method: centroid
-# Used for knn; centroid always forces k=1.
 k: 1
-id_to_annotation: data/cath-domain-sf-list-c123.txt
-# Production CCL AA∥3Di head (S40).
-model_path: checkpoints/cath_ccl_aa3di/s40_seed40.ckpt
-
-# Prebuilt 2048-d AA∥3Di store (contrasted-build-concat-store).
-embedding_dir: data/embeddings/cath-s100-aa3di-concat
-
-index: data/vector_db/cath_s100_c123_s40.pt
+id_to_annotation: null
+# Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
+model_path: aa3di_s40_seed40_head.pt
+embedding_dir: null
+index: cath_s40_centroids.pt
 output_dir: outputs/annotations
 
-# Cosine-DISTANCE cutoff (distance = 1 - cosine_similarity, range [0, 2]).
-# Val-locked 98% gates are split/metric-specific; 0.21 is a permissive starting
-# point near the production CCL S40 centroid operating region — override per run.
-distance_cutoff: 0.21
+# Val-locked 99% precision gate for the canonical S40 head (seed 40).
+# Recalibrate if you swap the head.
+distance_cutoff: 0.24699
 return_distance: true
 return_confidence: false
 return_true_annotation: false
