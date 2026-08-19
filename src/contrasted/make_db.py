@@ -6,11 +6,13 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
+from configs import hydra_config_dir
 from contrasted.data import (
     load_domain_ids_from_fasta,
     resolve_store,
     validate_store_for_projection_head,
 )
+from contrasted.data_home import locate
 from contrasted.projection import ProjectionHead, project
 from contrasted.search import VectorIndex
 from contrasted.utils import get_device, load_labels, require_exists
@@ -48,10 +50,9 @@ def run(cfg: DictConfig) -> None:
         )
 
     input_path = Path(cfg.input)
-    model_path = Path(cfg.model_path)
+    model_path = locate(cfg.model_path, kind="Projection head")
 
     require_exists(input_path, "Input FASTA")
-    require_exists(model_path, "Model checkpoint")
 
     logger.info(f"Loading projection head from: {model_path}")
     head = ProjectionHead.load(model_path).to(device)
@@ -113,7 +114,7 @@ def run(cfg: DictConfig) -> None:
     index.save(Path(cfg.index_path))
 
 
-@hydra.main(version_base=None, config_path="pkg://configs", config_name="make_db")
+@hydra.main(version_base=None, config_path=hydra_config_dir(), config_name="make_db")
 def main(cfg: DictConfig) -> None:  # pragma: no cover - CLI wrapper
     run(cfg)
 
