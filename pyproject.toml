@@ -21,7 +21,6 @@ dependencies = [
     "numpy>=1.20,<2",
     "hydra-core>=1.3",
     "omegaconf>=2.3",
-    "wandb==0.23.0",
     "tqdm>=4.60",
     # ProstT5 encoder (FASTA -> contrasted annotations runs end-to-end)
     "transformers>=4.40,<5",
@@ -34,14 +33,20 @@ dependencies = [
 Repository = "https://github.com/dmmiller597/contrasted"
 Issues = "https://github.com/dmmiller597/contrasted/issues"
 
-[project.optional-dependencies]
-# Cloud execution (Modal scripts under scripts/). Not required for local use.
-cloud = [
-    "modal>=1.3.1",
+[project.scripts]
+contrasted-train = "contrasted.train:main"
+contrasted-embed = "contrasted.embed:main"
+contrasted-make-db = "contrasted.make_db:main"
+contrasted-annotate = "contrasted.annotate:main"
+contrasted-build-concat-store = "contrasted.concat:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "ty",
 ]
-# Optional dependencies used by the exploratory/analysis scripts under
-# scripts/ (cluster analyses, plotting, structural validation, etc.).
-# Not required to train, make a vector DB, annotate, or evaluate.
+# Local research tree only (analysis/ is gitignored). Not a PyPI extra.
 analysis = [
     "faiss-cpu>=1.13.2",
     "h5py>=3.11",
@@ -59,22 +64,7 @@ analysis = [
     "progres>=1.1.0",
     "lmdb>=1.7.5",
     "pillow>=12.1.0",
-    "modal>=1.3.1",
     "requests>=2.32",
-]
-
-[project.scripts]
-contrasted-train = "contrasted.train:main"
-contrasted-embed = "contrasted.embed:main"
-contrasted-make-db = "contrasted.make_db:main"
-contrasted-annotate = "contrasted.annotate:main"
-contrasted-build-concat-store = "contrasted.concat:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=8.0",
-    "ruff>=0.9",
-    "ty",
 ]
 
 [build-system]
@@ -84,32 +74,35 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/contrasted"]
 
-# Only preprint configs ship in the wheel (Hydra pkg://configs).
+# Only preprint configs ship in the wheel (Hydra hydra_config_dir()).
 [tool.hatch.build.targets.wheel.force-include]
 "configs/__init__.py" = "configs/__init__.py"
 "configs/annotate.yaml" = "configs/annotate.yaml"
 "configs/embed.yaml" = "configs/embed.yaml"
 "configs/make_db.yaml" = "configs/make_db.yaml"
-"configs/make_db_cath_s100_s20.yaml" = "configs/make_db_cath_s100_s20.yaml"
+"configs/make_db_s20.yaml" = "configs/make_db_s20.yaml"
 "configs/train.yaml" = "configs/train.yaml"
-"configs/cath_s20_aa3di_concat_ccl.yaml" = "configs/cath_s20_aa3di_concat_ccl.yaml"
-"configs/cath_s40_aa3di_concat_ccl.yaml" = "configs/cath_s40_aa3di_concat_ccl.yaml"
+"configs/train/__init__.py" = "configs/train/__init__.py"
+"configs/train/cath_s20_aa3di.yaml" = "configs/train/cath_s20_aa3di.yaml"
+"configs/train/cath_s40_aa3di.yaml" = "configs/train/cath_s40_aa3di.yaml"
 "configs/logger/csv.yaml" = "configs/logger/csv.yaml"
-"configs/logger/wandb.yaml" = "configs/logger/wandb.yaml"
 "configs/model/loss/ccl.yaml" = "configs/model/loss/ccl.yaml"
 
-# Keep the sdist to the installable + verify surface (no checkpoints/reports sprawl).
+# Method-only sdist: package, configs, tests, and project metadata.
 [tool.hatch.build.targets.sdist]
 only-include = [
   "src/contrasted",
   "configs",
   "tests",
-  "reproduce",
-  "reports/v1-src-release",
   "pyproject.toml",
   "README.md",
   "LICENSE",
   "contrasted-logo.png",
+]
+# Lab-absolute production recipes must not ship even if they are on disk.
+exclude = [
+  "configs/train/cath_ted_dualfilt_*.yaml",
+  "configs/train/held_out_superfamilies_*.yaml",
 ]
 
 [tool.ruff]
@@ -120,13 +113,14 @@ exclude = [
     ".venv",
     "_archive",
     "tests/analysis",
+    "analysis",
 ]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["contrasted"]
+known-first-party = ["configs", "contrasted"]
 
 [tool.ty.environment]
 python-version = "3.11"
@@ -134,7 +128,3 @@ python-version = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-m 'not analysis'"
-markers = [
-    "analysis: tests that need the analysis optional extra",
-]
