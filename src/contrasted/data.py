@@ -23,6 +23,7 @@ CANONICAL_EMBEDDING_FILES = (
     "metadata.json",
 )
 
+
 def parse_fasta_header(header: str) -> str:
     """Extract a domain/sequence ID from a FASTA header line.
 
@@ -394,5 +395,3 @@ def validate_store_for_projection_head(
 def _is_populated_store(path: Path) -> bool:
     required = ("embeddings.npy", "ids.txt", "metadata.json")
     return path.is_dir() and all((path / name).exists() for name in required)
-
-
