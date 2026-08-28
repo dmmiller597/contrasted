@@ -1,19 +1,27 @@
 """Hydra configuration package for contrasted."""
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
+
+CONFIG_DIR_ENV = "CONTRASTED_CONFIG_DIR"
 
 
 def hydra_config_dir() -> str:
     """Directory Hydra should load recipes from.
 
-    Console scripts import the installed ``configs`` copy, which is only the
-    wheel allowlist. An editable checkout keeps extra lab recipes (dualfilt,
-    held-out) under ``configs/``. Prefer that overlay when the process is
-    running from the checkout or any subdirectory of it.
+    Uses ``$CONTRASTED_CONFIG_DIR`` when set, otherwise the ``configs``
+    package next to this file (editable checkout or the wheel copy).
+    Set the env var before launching the process; Hydra reads this path
+    when the console script is imported.
     """
-    here = Path.cwd().resolve()
-    for candidate in (here, *here.parents):
-        overlay = candidate / "configs"
-        if (overlay / "train.yaml").is_file() and (overlay / "annotate.yaml").is_file():
-            return str(overlay)
+    raw = os.environ.get(CONFIG_DIR_ENV, "").strip()
+    if raw:
+        override = Path(raw).expanduser().resolve()
+        if not override.is_dir():
+            raise FileNotFoundError(
+                f"${CONFIG_DIR_ENV} is {override}, which is not a directory"
+            )
+        return str(override)
     return str(Path(__file__).resolve().parent)
