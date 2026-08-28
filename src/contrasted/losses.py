@@ -1,8 +1,4 @@
-"""Contrastive loss functions for ContrasTED v1 (Center Contrastive Loss).
-
-Full historical objective matrix lives in
-``_archive/src/contrasted_losses_full.py``.
-"""
+"""Center contrastive loss (CCL) used to train the projection head."""
 
 from __future__ import annotations
 
