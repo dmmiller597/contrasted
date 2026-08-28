@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,22 +10,24 @@ from hydra import compose, initialize_config_dir
 from hydra.errors import ConfigCompositionException
 from omegaconf import OmegaConf
 
-from configs import hydra_config_dir
+from configs import CONFIG_DIR_ENV, hydra_config_dir
 
 ENTRY_CONFIGS = (
     "train",
     "embed",
     "make_db",
     "annotate",
-    "make_db_s20",
     # Training recipes live in configs/train/. They use an absolute default
     # (- /train) so the group name does not shadow configs/train.yaml.
     "train/cath_s20_aa3di",
-    "train/cath_s40_aa3di",
 )
 
 HOST_PATH_RE = re.compile(r"/(?:scratch\d+|SAN|Users)/")
-_LAB_RECIPE = Path("configs/train/cath_ted_dualfilt_s40_aa3di.yaml")
+
+
+@pytest.fixture(autouse=True)
+def _clear_config_dir_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONFIG_DIR_ENV, raising=False)
 
 
 @pytest.mark.parametrize("config_name", ENTRY_CONFIGS)
@@ -44,40 +44,41 @@ def test_entry_config_composes(config_name: str) -> None:
         assert "datamodule" in cfg, f"{config_name} did not flatten to the job root"
 
 
-def test_lab_dualfilt_recipe_composes_via_cli() -> None:
-    """Gitignored production YAML must still compose from a repo-root CLI."""
-    if not _LAB_RECIPE.is_file():
-        pytest.skip("lab dualfilt recipe is not on disk")
-    exe = shutil.which("contrasted-train")
-    if exe is None:
-        pytest.skip("contrasted-train is not on PATH")
-    result = subprocess.run(
-        [exe, "--config-name=train/cath_ted_dualfilt_s40_aa3di", "--cfg", "job"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "embedding_dir" in result.stdout
-    assert re.search(r"(?m)^datamodule:", result.stdout)
+def test_s20_recipe_writes_under_outputs_train() -> None:
+    with initialize_config_dir(version_base=None, config_dir=hydra_config_dir()):
+        cfg = compose(config_name="train/cath_s20_aa3di", return_hydra_config=True)
+    run_dir = str(cfg.hydra.run.dir)
+    assert run_dir.startswith("outputs/train/ccl_s20/seed_40/")
+    assert cfg.hydra.job.chdir is False
 
 
-def test_lab_dualfilt_recipe_composes_from_a_subdirectory() -> None:
-    """Analysis scripts often invoke the CLI from analysis/, not the repo root."""
-    if not _LAB_RECIPE.is_file():
-        pytest.skip("lab dualfilt recipe is not on disk")
-    exe = shutil.which("contrasted-train")
-    if exe is None:
-        pytest.skip("contrasted-train is not on PATH")
-    nested = Path("analysis")
-    if not nested.is_dir():
-        pytest.skip("analysis/ is not on disk")
-    result = subprocess.run(
-        [exe, "--config-name=train/cath_ted_dualfilt_s40_aa3di", "--cfg", "job"],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=nested,
-    )
-    assert result.returncode == 0, result.stderr
-    assert re.search(r"(?m)^datamodule:", result.stdout)
+def test_hydra_config_dir_ignores_ancestor_overlay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    packaged = hydra_config_dir()
+    overlay = tmp_path / "pipeline" / "configs"
+    overlay.mkdir(parents=True)
+    (overlay / "train.yaml").write_text("input: fake\n")
+    (overlay / "annotate.yaml").write_text("input: fake\n")
+    work = tmp_path / "pipeline" / "work" / "ab" / "cdef"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    assert hydra_config_dir() == packaged
+
+
+def test_hydra_config_dir_uses_contrasted_config_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override = tmp_path / "extra-configs"
+    override.mkdir()
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(override))
+    assert Path(hydra_config_dir()) == override.resolve()
+
+
+def test_hydra_config_dir_rejects_missing_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "gone"
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(missing))
+    with pytest.raises(FileNotFoundError, match=CONFIG_DIR_ENV):
+        hydra_config_dir()

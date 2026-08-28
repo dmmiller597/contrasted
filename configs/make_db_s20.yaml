@@ -1,6 +1,0 @@
-defaults:
-  - make_db
-  - _self_
-
-model_path: aa3di_s20_seed40_head.pt
-index_path: index_s20.pt

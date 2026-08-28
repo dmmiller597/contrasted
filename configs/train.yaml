@@ -6,9 +6,9 @@ seed: 40
 
 datamodule:
   _target_: contrasted.datamodule.EmbeddingDataModule
-  train_fasta: data/cath_s40_split/train.fasta
-  val_fasta: data/cath_s40_split/val.fasta
-  test_fasta: data/cath_s40_split/test.fasta
+  train_fasta: data/cath_s20_split/train.fasta
+  val_fasta: data/cath_s20_split/val.fasta
+  test_fasta: data/cath_s20_split/test.fasta
   embedding_dir: data/embeddings/cath-s100-aa3di-concat
   batch_size: 1024
   num_workers: 4

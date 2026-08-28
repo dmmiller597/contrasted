@@ -1,5 +1,7 @@
 """TM-align structural validation wrapper."""
 
+from __future__ import annotations
+
 import logging
 import re
 import shutil
@@ -32,9 +34,10 @@ def find_tmalign_binary(path: str | None = None) -> Path:
             return p
         raise FileNotFoundError(f"TMalign binary not found at specified path: {path}")
 
-    resolved = shutil.which("TMalign")
-    if resolved is not None:
-        return Path(resolved)
+    for name in ("TMalign", "tmalign"):
+        resolved = shutil.which(name)
+        if resolved is not None:
+            return Path(resolved)
 
     raise FileNotFoundError(
         "TMalign binary not found on PATH. Install TMalign or specify "
@@ -116,10 +119,54 @@ _STRUCTURE_EXTENSIONS = [".pdb", ".cif", ".pdb.gz", ".cif.gz", ".ent", ".ent.gz"
 def resolve_structure_path(domain_id: str, structure_dir: Path) -> Path | None:
     """Find a structure file for ``domain_id`` in ``structure_dir``, or ``None``.
 
-    Tries extensions .pdb, .cif, .pdb.gz, .cif.gz, .ent, .ent.gz in order.
+    Tries the bare CATH-style filename first, then extensions .pdb, .cif,
+    .pdb.gz, .cif.gz, .ent, .ent.gz.
     """
+    bare = structure_dir / domain_id
+    if bare.is_file():
+        return bare
     for ext in _STRUCTURE_EXTENSIONS:
         candidate = structure_dir / f"{domain_id}{ext}"
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
     return None
+
+
+def pick_tm_best(hits: list[tuple[str, float]]) -> tuple[str, float] | None:
+    """Return the ``(target_id, tm_score)`` with the highest query TM-score.
+
+    Foldclass protocol: retrieve *k* neighbours, TM-align each, assign the
+    TM-best. Ties keep the first occurrence at that score (stable max).
+    """
+    if not hits:
+        return None
+    return max(hits, key=lambda item: item[1])
+
+
+def rerank_by_tmalign(
+    query_id: str,
+    target_ids: list[str],
+    query_dir: Path,
+    target_dir: Path,
+    binary: str = "TMalign",
+) -> tuple[str, float] | None:
+    """TM-align ``query_id`` against each neighbour and return the TM-best hit."""
+    query_struct = resolve_structure_path(query_id, query_dir)
+    if query_struct is None:
+        logger.warning("No structure file for query %s in %s", query_id, query_dir)
+        return None
+    scored: list[tuple[str, float]] = []
+    for target_id in target_ids:
+        target_struct = resolve_structure_path(target_id, target_dir)
+        if target_struct is None:
+            logger.warning(
+                "No structure file for target %s in %s", target_id, target_dir
+            )
+            continue
+        try:
+            result = run_tmalign(query_struct, target_struct, binary=binary)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("TMalign failed for %s vs %s: %s", query_id, target_id, exc)
+            continue
+        scored.append((target_id, result.tm_score))
+    return pick_tm_best(scored)

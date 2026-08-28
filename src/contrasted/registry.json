@@ -2,25 +2,22 @@
   "data_home_env": "CONTRASTED_DATA_DIR",
   "zenodo_record": null,
   "zenodo_url": null,
-  "default_head": "aa3di_s40_seed40_head.pt",
-  "default_index": "cath_s40_centroids.pt",
+  "default_head": "aa3di_s20_seed40_head.pt",
+  "default_index": "cath_s20_centroids.pt",
   "files": {
-    "aa3di_s40_seed40_head.pt": {
-      "role": "projection_head",
-      "split": "S40",
-      "sha256": "b4e5c2f7b01103a2510b9a12c3362eefc5458960454194f39a1b7ec3e98d7c46",
-      "distance_cutoff": 0.24699
-    },
     "aa3di_s20_seed40_head.pt": {
       "role": "projection_head",
       "split": "S20",
-      "sha256": "1f2e14d8eb534e3793db5dd769da45c14279264340e3577e00b6a4fb6c727a39",
-      "distance_cutoff": 0.32874464988708496
+      "sha256": "d30189163f60744f28e56e495c77d6955c4ff84928e10a4ad2583a3f675e9eb3",
+      "distance_cutoff": 0.24048042,
+      "canonical": true,
+      "note": "Published S20 AA∥3Di projection head (seed 40)."
     },
-    "cath_s40_centroids.pt": {
+    "cath_s20_centroids.pt": {
       "role": "centroid_index",
-      "split": "S40",
-      "sha256": null
+      "split": "S20",
+      "sha256": "f7bb49ce60553ebd2b4a9f7d8baea79e84f19ca6b994cd699be92a2f85e79c49",
+      "canonical": true
     }
   }
 }

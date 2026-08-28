@@ -3,14 +3,13 @@ method: centroid
 k: 1
 id_to_annotation: null
 # Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
-model_path: aa3di_s40_seed40_head.pt
+model_path: aa3di_s20_seed40_head.pt
 embedding_dir: null
-index: cath_s40_centroids.pt
+index: cath_s20_centroids.pt
 output_dir: outputs/annotations
 
-# Val-locked 99% precision gate for the canonical S40 head (seed 40).
-# Recalibrate if you swap the head.
-distance_cutoff: 0.24699
+# Cutoff for the published S20 head. Override if you train your own.
+distance_cutoff: 0.24048042
 return_distance: true
 return_confidence: false
 return_true_annotation: false

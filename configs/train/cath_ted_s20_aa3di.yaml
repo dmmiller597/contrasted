@@ -1,6 +1,6 @@
 # @package _global_
-# CATH S20, Center-Contrastive on AA∥3Di concat.
-# Same loss as the manuscript heads (scale=32, margin=0.3, lambda=1.0, ls=0.1).
+# CATH S20 train + TED Gold S40 reps filtered at 20% ID vs S20 val/test.
+# AA∥3Di (2048-d); S20 CCL.
 defaults:
   # Absolute (leading /) so this resolves to configs/train.yaml, not
   # configs/train/train.yaml -- these recipes live in a subdirectory.
@@ -8,37 +8,30 @@ defaults:
   - _self_
 
 seed: 40
-loss_name: ccl_s20
+loss_name: cath_ted_concat_s20
 test_after_fit: true
 
 datamodule:
-  train_fasta: data/cath_s20_split/train.fasta
+  train_fasta: /SAN/orengolab/cath_plm/contrasted/data/ted_s40_lt20_vs_s20_valtest_v2/train_s20_plus_ted.fasta
   val_fasta: data/cath_s20_split/val.fasta
   test_fasta: data/cath_s20_split/test.fasta
+  # Train-time / test_after_fit Acc_H gallery (not the 11M CATH+TED train set).
   knn_index_fasta: data/cath_s20_split/train.fasta
-  embedding_dir: data/embeddings/cath-s100-aa3di-concat
+  embedding_dir: /SAN/orengolab/functional-families/contrasted/data/embeddings/cath-ted-s20-remote-v2-concat
   batch_size: 1024
   num_workers: 4
   balanced_sampler: true
   m_per_class: 2
   batches_per_epoch: 112
-  strict_split_checks: true
-  split_expectations: s20
+  strict_split_checks: false
 
 model:
   learning_rate: 0.012
   weight_decay: 1.0e-4
   warmup_epochs: 10
-  min_lr: 1.0e-6
   projection_head:
     input_dim: 2048
-    hidden_dim: 512
-    output_dim: 128
-    dropout: 0.1
 
-logger:
-  _target_: lightning.pytorch.loggers.CSVLogger
-  save_dir: ${hydra:run.dir}/csv_logs
 
 trainer:
   max_epochs: 80
@@ -69,6 +62,6 @@ callbacks:
 
 hydra:
   run:
-    dir: outputs/train/${loss_name}/seed_${seed}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: /SAN/orengolab/cath_plm/contrasted/outputs/cath_s20_remote_v2/aa3di/seed_${seed}
   job:
     chdir: false

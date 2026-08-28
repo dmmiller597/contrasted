@@ -8,6 +8,7 @@ turns a Hydra filename into a path in that directory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import lru_cache
@@ -38,20 +39,44 @@ def get_data_home() -> Path:
     return home
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _require_registry_hash(path: Path) -> Path:
+    expected = (registry().get("files", {}).get(path.name) or {}).get("sha256")
+    if not expected:
+        return path
+    actual = _sha256_file(path)
+    if actual != expected:
+        raise ValueError(
+            f"{path} sha256 {actual} does not match registry {expected} "
+            f"for {path.name}. That basename is pinned in registry.json. "
+            "Replace the file or pass a path whose basename is not in the "
+            "registry."
+        )
+    return path
+
+
 def locate(raw: str | Path, *, kind: str) -> Path:
     """Return an existing weights path, or raise with download instructions.
 
     An existing path wins. A bare filename then looks in ``get_data_home()``.
     A missing path that already names a directory is not rewritten to a
-    same-basename file in the data home.
+    same-basename file in the data home. A registry sha256, when present,
+    must match the file on disk.
     """
     path = Path(raw).expanduser()
     if path.exists():
-        return path.resolve()
+        return _require_registry_hash(path.resolve())
     if path.parent == Path("."):
         cached = get_data_home() / path.name
         if cached.exists():
-            return cached.resolve()
+            return _require_registry_hash(cached.resolve())
     raise FileNotFoundError(_missing_message(path, kind=kind))
 
 
