@@ -159,9 +159,9 @@ def project(
         if store_dim != int(input_dim):
             raise ValueError(
                 f"Embedding store width {store_dim} does not match projection "
-                f"head input_dim {input_dim}. Headline CCL AA∥3Di expects a "
-                f"2048-d AA∥3Di store (contrasted-build-concat-store); "
-                f"AA-only ProstT5 stores are 1024-d."
+                f"head input_dim {input_dim}. A 2048-d head needs an AA∥3Di "
+                f"store from contrasted-build-concat-store; AA-only ProstT5 "
+                f"stores are 1024-d."
             )
 
     rows: Sequence[int] = range(len(embeddings)) if indices is None else indices
