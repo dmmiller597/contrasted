@@ -13,7 +13,7 @@ keywords = [
     "cath",
     "protein-language-model",
     "knn",
-    "pytorch"
+    "pytorch",
 ]
 dependencies = [
     "torch>=2.0,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
@@ -75,21 +75,19 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/contrasted"]
 
-# Only preprint configs ship in the wheel (Hydra hydra_config_dir()).
+# Public Hydra recipes copied into the wheel for hydra_config_dir().
 [tool.hatch.build.targets.wheel.force-include]
 "configs/__init__.py" = "configs/__init__.py"
 "configs/annotate.yaml" = "configs/annotate.yaml"
 "configs/embed.yaml" = "configs/embed.yaml"
 "configs/make_db.yaml" = "configs/make_db.yaml"
-"configs/make_db_s20.yaml" = "configs/make_db_s20.yaml"
 "configs/train.yaml" = "configs/train.yaml"
 "configs/train/__init__.py" = "configs/train/__init__.py"
 "configs/train/cath_s20_aa3di.yaml" = "configs/train/cath_s20_aa3di.yaml"
-"configs/train/cath_s40_aa3di.yaml" = "configs/train/cath_s40_aa3di.yaml"
 "configs/logger/csv.yaml" = "configs/logger/csv.yaml"
 "configs/model/loss/ccl.yaml" = "configs/model/loss/ccl.yaml"
 
-# Method-only sdist: package, configs, tests, and project metadata.
+# Method-only sdist. Lab recipes with host paths must not ship.
 [tool.hatch.build.targets.sdist]
 only-include = [
   "src/contrasted",
@@ -100,9 +98,8 @@ only-include = [
   "LICENSE",
   "contrasted-logo.png",
 ]
-# Lab-absolute production recipes must not ship even if they are on disk.
 exclude = [
-  "configs/train/cath_ted_dualfilt_*.yaml",
+  "configs/train/cath_ted_s20_*.yaml",
   "configs/train/held_out_superfamilies_*.yaml",
 ]
 
@@ -113,7 +110,6 @@ src = ["src"]
 exclude = [
     ".venv",
     "_archive",
-    "tests/analysis",
     "analysis",
 ]
 
