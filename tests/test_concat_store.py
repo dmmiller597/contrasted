@@ -12,6 +12,7 @@ from contrasted.concat import (
     ConcatStoreRequest,
     build_aa_3di_concat_store,
     concat_aa_di_rows,
+    main,
     normalize_foldseek_3di_id,
 )
 from contrasted.data import EmbeddingStore
@@ -156,3 +157,30 @@ def test_build_refuses_populated_dir(tmp_path):
                 di_ids=ids,
             )
         )
+
+
+def test_main_defaults_roster_to_aa_store_ids(tmp_path: Path) -> None:
+    aa_dir = _aa_store(tmp_path, n=3, dim=4)
+    ids = ["d0", "d1", "d2"]
+    npy = tmp_path / "di.npy"
+    np.save(npy, np.ones((3, 4), dtype=np.float16))
+    id_file = tmp_path / "di_ids.txt"
+    id_file.write_text("\n".join(ids) + "\n")
+    out_dir = tmp_path / "concat"
+
+    main(
+        [
+            "--aa-store",
+            str(aa_dir),
+            "--output-dir",
+            str(out_dir),
+            "--di-cache-npy",
+            str(npy),
+            "--di-cache-ids",
+            str(id_file),
+        ]
+    )
+
+    store = EmbeddingStore.from_dir(out_dir)
+    assert store.ids == ids
+    assert store.embeddings.shape == (3, 8)
