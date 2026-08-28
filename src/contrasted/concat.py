@@ -1,7 +1,7 @@
 """Build AA∥3Di concatenated ProstT5 embedding stores.
 
-Headline ContrasTED uses 2048-d inputs formed by concatenating 1024-d AA and
-1024-d 3Di ProstT5 embeddings for the same domain id.
+A 2048-d store concatenates 1024-d AA and 1024-d 3Di ProstT5 embeddings
+for the same domain id.
 """
 
 from __future__ import annotations
@@ -299,13 +299,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--domain-ids",
         type=Path,
-        help="Text file with one domain id per line",
+        help="Optional id list. Default: every id in the AA store",
     )
     p.add_argument(
         "--split-fastas",
         type=Path,
         nargs="+",
-        help="FASTA files whose domain ids define the store roster",
+        help="Optional FASTA files whose ids subset the AA store",
     )
     p.add_argument("--di-cache-npy", type=Path, default=None)
     p.add_argument("--di-cache-ids", type=Path, default=None)
@@ -316,9 +316,6 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--model-name", default="Rostlab/ProstT5")
     p.add_argument("--overwrite", action="store_true")
     args = p.parse_args(argv)
-
-    if args.domain_ids is None and not args.split_fastas:
-        p.error("provide --domain-ids and/or --split-fastas")
 
     domain_ids: list[str] = []
     seen: set[str] = set()
@@ -333,6 +330,9 @@ def main(argv: list[str] | None = None) -> None:
                 if did not in seen:
                     seen.add(did)
                     domain_ids.append(did)
+    if not domain_ids:
+        aa = EmbeddingStore.from_dir(args.aa_store, require_labels=False)
+        domain_ids = list(aa.ids)
 
     di_embeddings = None
     di_ids = None
