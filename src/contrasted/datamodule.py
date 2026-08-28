@@ -23,7 +23,19 @@ from contrasted.data import (
 
 logger = logging.getLogger(__name__)
 
-# Expected invariants for the CATH S40 objective-matrix split.
+# Expected invariants for the CATH S20 split.
+S20_SPLIT_EXPECTATIONS = {
+    "train_domains": 116_301,
+    "train_h": 5_659,
+    "val_queries": 514,
+    "test_queries": 1_028,
+    "num_c": 3,
+    "num_a": 40,
+    "num_t": 1_282,
+    "num_h": 5_659,
+}
+
+# Expected invariants for the CATH S40 objective-matrix split (SI).
 S40_SPLIT_EXPECTATIONS = {
     "train_domains": 114_350,
     "train_h": 5_324,
@@ -33,6 +45,11 @@ S40_SPLIT_EXPECTATIONS = {
     "num_a": 40,
     "num_t": 1_225,
     "num_h": 5_324,
+}
+
+SPLIT_EXPECTATIONS = {
+    "s20": S20_SPLIT_EXPECTATIONS,
+    "s40": S40_SPLIT_EXPECTATIONS,
 }
 
 
@@ -157,6 +174,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         batches_per_epoch: int = 112,
         sampler_seed: int | None = None,
         strict_split_checks: bool = False,
+        split_expectations: str = "s20",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -181,6 +199,12 @@ class EmbeddingDataModule(L.LightningDataModule):
         self.batches_per_epoch = batches_per_epoch
         self.sampler_seed = sampler_seed
         self.strict_split_checks = strict_split_checks
+        if split_expectations not in SPLIT_EXPECTATIONS:
+            raise ValueError(
+                f"Unknown split_expectations={split_expectations!r}; "
+                f"expected one of {sorted(SPLIT_EXPECTATIONS)}"
+            )
+        self.split_expectations = split_expectations
 
         self.store: EmbeddingStore | None = None
         self.test_datasets: dict[str, EmbeddingDataset] = {}
@@ -250,7 +274,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         )
 
     def validate_split_invariants(self) -> None:
-        """Fail if the loaded split does not match S40 objective-matrix expectations."""
+        """Fail if the loaded split does not match the locked expectations."""
         if not self.strict_split_checks:
             return
         if not hasattr(self, "train_dataset") or not hasattr(self, "val_dataset"):
@@ -263,7 +287,7 @@ class EmbeddingDataModule(L.LightningDataModule):
         else:
             test_n = None
         hierarchy = self.hierarchy
-        exp = S40_SPLIT_EXPECTATIONS
+        exp = SPLIT_EXPECTATIONS[self.split_expectations]
 
         errors: list[str] = []
         if train_n != exp["train_domains"]:
@@ -306,8 +330,9 @@ class EmbeddingDataModule(L.LightningDataModule):
                 errors.append("test H classes not subset of training")
 
         if errors:
+            label = self.split_expectations.upper()
             raise ValueError(
-                "S40 split invariant checks failed:\n- " + "\n- ".join(errors)
+                f"{label} split invariant checks failed:\n- " + "\n- ".join(errors)
             )
 
     def setup(self, stage: str | None = None):
