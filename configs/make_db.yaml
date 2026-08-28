@@ -1,6 +1,6 @@
 input: ???
 # Resolved against $CONTRASTED_DATA_DIR (default ~/.cache/contrasted).
-model_path: aa3di_s40_seed40_head.pt
+model_path: aa3di_s20_seed40_head.pt
 index_path: index.pt
 embedding_dir: null
 ids: null
