@@ -1,0 +1,66 @@
+# @package _global_
+# Single predefined absent-superfamily stress test.
+# Production AA|3Di S40 CCL recipe, seed 40, with the frozen 50 H codes
+# removed from both CATH and dual-filtered TED training records.
+defaults:
+  # Absolute (leading /) so this resolves to configs/train.yaml, not
+  # configs/train/train.yaml -- these recipes live in a subdirectory.
+  - /train
+  - _self_
+
+seed: 40
+loss_name: cath_ted_h50_s40
+test_after_fit: true
+
+datamodule:
+  train_fasta: /scratch0/dmiller/contrasted/outputs/cath_ted_h50_s40/data/train.fasta
+  val_fasta: /SAN/orengolab/functional-families/contrasted/data/cath_s40_split/val.fasta
+  test_fasta: /SAN/orengolab/functional-families/contrasted/data/cath_s40_split/test.fasta
+  knn_index_fasta: /SAN/orengolab/functional-families/contrasted/data/cath_s40_split/train_excl_holdouts.fasta
+  embedding_dir: /SAN/orengolab/functional-families/contrasted/data/embeddings/cath-ted-s40-dualfilt-concat
+  batch_size: 1024
+  num_workers: 4
+  balanced_sampler: true
+  m_per_class: 2
+  batches_per_epoch: 112
+  strict_split_checks: false
+
+model:
+  learning_rate: 0.012
+  weight_decay: 1.0e-4
+  warmup_epochs: 10
+  projection_head:
+    input_dim: 2048
+
+trainer:
+  max_epochs: 80
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  deterministic: true
+  use_distributed_sampler: false
+  default_root_dir: ${hydra:run.dir}
+
+callbacks:
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/knn_accuracy
+    mode: max
+    save_top_k: 1
+    filename: "best-{epoch}-{val/knn_accuracy:.4f}"
+    dirpath: ${hydra:run.dir}/checkpoints
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val/knn_accuracy
+    mode: max
+    patience: 15
+    min_delta: 0.001
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  - _target_: contrasted.callbacks.KNNEvaluationCallback
+  - _target_: contrasted.callbacks.HeadExportCallback
+  - _target_: contrasted.callbacks.SetEpochCallback
+
+hydra:
+  run:
+    dir: /scratch0/dmiller/contrasted/outputs/cath_ted_h50_s40/seed40
+  job:
+    chdir: false
